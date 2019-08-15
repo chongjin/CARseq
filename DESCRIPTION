@@ -1,14 +1,14 @@
 Package: CARseq
 Type: Package
 Title: What the package does (short line)
-Version: 1.0
+Version: 0.0.0.9000
 Date: 2019-08-10
 Author: Who wrote it
 Maintainer: Who to complain to <yourfault@somewhere.net>
 Description: More about what it does (maybe more than one line)
 License: What license is it under?
-Imports: Rcpp (>= 1.0.2), RcppEigen (>= 0.3.3.5.0), matrixStats, nloptr
+Imports: Rcpp (>= 1.0.2), RcppEigen (>= 0.3.3.5.0), matrixStats, nloptr, MASS, zetadiv
 LinkingTo: Rcpp, RcppEigen
 Suggests: 
-    testthat (>= 2.1.0)
+    testthat (>= 2.1.0), 
 RoxygenNote: 6.1.1
