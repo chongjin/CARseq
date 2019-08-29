@@ -2,8 +2,7 @@
 % Please edit documentation in R/loglik.R
 \name{grad_negloglik}
 \alias{grad_negloglik}
-\title{gradient of negative log-likelihood function of negative binomial distribution 
-whose mean is a sum of nonnegative terms with covariates}
+\title{gradient of negative log-likelihood of a negative binomial model}
 \usage{
 grad_negloglik(coefs, cell_type_specific_variables, other_variables,
   read_depth, cellular_proportions, counts)
@@ -23,8 +22,9 @@ gamma is a matrix of H x M dimension of cell type-specific non-negative coeffici
 \item{counts}{A vector of n_B total read counts observed.}
 }
 \description{
-gradient of negative log-likelihood function of negative binomial distribution 
-whose mean is a sum of nonnegative terms with covariates
+\code{grad_negloglik} provides gradient of negative log-likelihood function
+ of negative binomial distribution 
+whose mean is a sum of nonnegative terms with covariates.
 }
 \examples{
 library(CARseq)

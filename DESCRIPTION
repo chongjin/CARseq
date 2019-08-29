@@ -6,9 +6,10 @@ Date: 2019-08-10
 Author: Who wrote it
 Maintainer: Who to complain to <yourfault@somewhere.net>
 Description: More about what it does (maybe more than one line)
+Encoding: UTF-8
 License: What license is it under?
-Imports: Rcpp (>= 1.0.2), RcppEigen (>= 0.3.3.5.0), matrixStats, nloptr, MASS, zetadiv
+Imports: Rcpp, RcppEigen, matrixStats, nloptr, MASS, zetadiv, bvls
 LinkingTo: Rcpp, RcppEigen
 Suggests: 
-    testthat (>= 2.1.0), 
+    testthat, 
 RoxygenNote: 6.1.1

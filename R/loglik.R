@@ -14,9 +14,13 @@
 #' @import nloptr
 #' @import zetadiv
 #' @import MASS
+#' @import bvls
 NULL
 
-#' negative log-likelihood function of negative binomial distribution 
+#' negative log-likelihood function of a CARseq negative binomial model
+#' 
+#' \code{negloglik} provides a negative log-likelihood function 
+#' of negative binomial distribution 
 #' whose mean is a sum of nonnegative terms with covariates 
 #'
 #' @param coefs a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,
@@ -34,7 +38,8 @@ NULL
 #' n_B = 60
 #' K = 1
 #' M = 3
-#' coefs = c(rep(0, K), rep(1, H*M), overdispersion=10)  # initial value
+#' overdispersion_theta = 10
+#' coefs = c(rep(0, K), rep(1, H*M), overdispersion_theta)  # initial value
 #' cell_type_specific_variables = array(0, dim=c(n_B, H, M))
 #' cell_type_specific_variables[1:(n_B/3), , 1] = 1
 #' cell_type_specific_variables[(n_B/3+1):(n_B*2/3), , 2] = 1
@@ -82,8 +87,282 @@ negloglik = function(coefs, cell_type_specific_variables, other_variables, read_
         (counts + overdispersion) * log(overdispersion+mu))
 }
 
-#' gradient of negative log-likelihood function of negative binomial distribution 
-#' whose mean is a sum of nonnegative terms with covariates 
+#' fit a CARseq negative binomial model
+#' 
+#' \code{fit_model} fits a negative binomial distribution 
+#' whose mean is a sum of nonnegative terms with covariates.
+#' The overdispersion parameter is estimated by maximizing the 
+#' adjusted profile log-likelihood.
+#'
+#' @param init a numeric vector of (K + H x M + 1) corresponding to the initial value of
+#'             c(beta, gamma, overdispersion). Can be NULL.
+#' @param cell_type_specific_variables an array of n_B x H x K of cell type-independent variables.
+#' @param other_variables a design matrix of n_B x M of cell type-specific variables. Can be NULL.
+#' @param read_depth a vector of n_B sample-specific read depths.
+#' @param cellular_proportions a matrix of n_B x H of cellular proportions.
+#' @param counts A vector of n_B total read counts observed.
+#' @param is_active A logical vector of length (K + H x M), recording which predictors are included in the model.
+#' @param overdispersion_theta_init initial value of overdispersion, parametrized as \code{theta} in \link[glm.nb]{MASS}.
+#' @param fix_overdispersion logical. If \code{TRUE}, the overdispersion parameter will not be updated.
+#'
+#' @examples
+#' library(CARseq)
+#' set.seed(1234)
+#' H = 4
+#' n_B = 60
+#' K = 1
+#' M = 3
+#' cell_type_specific_variables = array(0, dim=c(n_B, H, M))
+#' cell_type_specific_variables[1:(n_B/3), , 1] = 1
+#' cell_type_specific_variables[(n_B/3+1):(n_B*2/3), , 2] = 1
+#' cell_type_specific_variables[(n_B*2/3+1):n_B, , 3] = 1
+#' other_variables = matrix(runif(n_B * K, min = -1, max = 1), nrow=n_B, ncol=K)
+#' read_depth = round(runif(n_B, min = 50, max = 100))
+#' cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
+#' cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
+#' counts = round(runif(n_B, min = 100, max = 200))
+#' is_active = rep(TRUE, K + H*M)
+#' fit_model(init, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+#' @export
+fit_model = function(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts,
+                     is_active = NULL, fix_overdispersion = FALSE, non_negative = TRUE) {
+  
+  # obtain H, M, K, n_B
+  n_B = length(counts)
+  if (is.null(other_variables)) other_variables = matrix(ncol = 0, nrow = n_B)
+  if (!is.array(cell_type_specific_variables)) {
+    stop("cell_type_specific_variables should be an array")
+  } else if (length(dim(cell_type_specific_variables)) != 3) {
+    stop("cell_type_specific_variables should be a 3-dimensional (n_B, H, M) array")
+  }
+  if (!is.matrix(other_variables)) stop("other_variables should be a matrix")
+  if (!is.matrix(cellular_proportions)) stop("cellular_proportions should be a matrix")
+  if (dim(cell_type_specific_variables)[1] != n_B) stop("Length of the 1st dimension in cell_type_specific_variables does not match the length of counts")
+  if (nrow(other_variables) != n_B) stop("Number of rows in other_variables does not match the length of counts")
+  if (nrow(cellular_proportions) != n_B) stop("Number of rows in cellular_proportions does not match the length of counts")
+  M = dim(cell_type_specific_variables)[3]
+  K = ncol(other_variables)
+  H = ncol(cellular_proportions)
+  coefs = init
+  if (is.null(init)) {
+    # initialize using MASS::glm.nb
+    nbmodel = MASS::glm.nb(counts~offset(log(read_depth))+other_variables)
+    # coefs = c(rep(0, K), rep(1, H * M), overdispersion=100)
+    coefs = c(nbmodel$coefficients[-1],                         # cell type-independent variables
+              rep(exp(nbmodel$coefficients[1]), H * M),         # cell type-specific variables
+              overdispersion = nbmodel$theta)
+    
+    # TODO: use cooks.distance() and fitted() to process the outliers
+  } else if (length(coefs) != K + H * M + 1) {
+    stop("The length of coefs is not equal to K + H * M + 1")
+  }
+  
+  if (is.null(is_active)) is_active = rep(TRUE, K + H * M)
+  
+  epsilon_convergence = 1e-8
+  maxiter = 20
+  
+  iter = 0
+  coefs_prev = numeric(0)
+  while (length(coefs_prev) == 0 ||
+          (dist(rbind(coefs_prev, c(coefs[-length(coefs)][is_active], coefs[length(coefs)]))) > epsilon_convergence &&
+           iter < maxiter)) {
+
+    overdispersion_theta = coefs[length(coefs)]
+
+    # bounded-variable least squares
+    inner_iter = 0
+    coefs_inner_prev = numeric(0)
+    while (length(coefs_inner_prev) == 0 ||
+            (dist(rbind(coefs_inner_prev, coefs[-length(coefs)][is_active])) > epsilon_convergence &&
+             inner_iter < maxiter)) {
+      # split coefs into beta (cell type-independent) and gamma (cell type-specific)
+      beta = coefs[seq_len(K)]
+      gamma = matrix(coefs[seq_len(H * M) + K], nrow = H, ncol = M)
+      covariate_adjusted_read_depth = exp(other_variables %*% matrix(beta, ncol=1, nrow=K)) * read_depth  # n_B x 1
+      mu_matrix = matrix(NA, n_B, H)
+      for (i in seq_len(n_B)) {
+        # read depth, other effects, cell type-specific effects
+        mu_matrix[i, ] = cellular_proportions[i, ] * matrixStats::rowProds(gamma ^ cell_type_specific_variables[i, , ])
+      }
+      mu_matrix = mu_matrix * as.numeric(covariate_adjusted_read_depth)
+      mu = rowSums(mu_matrix)
+      weights = overdispersion_theta / (mu * (mu+overdispersion_theta))
+      adjusted_design_matrix = cbind(other_variables * mu,
+                                     matrix(cell_type_specific_variables, nrow=n_B) / rep(gamma, each=n_B) * as.numeric(mu_matrix))
+      
+      adjusted_response = adjusted_design_matrix %*% coefs[-length(coefs)] + (counts - mu)
+      
+      coefs_inner_prev = coefs[-length(coefs)][is_active]
+      # lsfit cannot guarantee non-negativity:
+      
+      if (non_negative) {
+        # some practical bounds to make the method work numerically:
+        maxcoef_log = 10
+        maxmu = 1e4
+        minmu = 1e-4
+        # bounded-variable least squares ensures that the active parameters in H*M cell type-specific ones are bounded:
+        coefs[-length(coefs)][is_active] = bvls::bvls(adjusted_design_matrix[, is_active] * sqrt(weights),
+                                                      adjusted_response * sqrt(weights),
+                                                      bl = c(rep(-maxcoef_log, K), rep(minmu, sum(is_active) - K)),
+                                                      bu = c(rep( maxcoef_log, K), rep(maxmu, sum(is_active) - K)))$x
+      } else {
+        coefs[-length(coefs)][is_active] = lsfit(adjusted_design_matrix[, is_active], adjusted_response, wt=weights, intercept=FALSE)$coef
+      }
+
+      # Least squares can be fitted directly using QR decomposition
+      # See https://math.stackexchange.com/questions/852327/efficient-algorithm-for-iteratively-reweighted-least-squares-problem
+      # See https://doi.org/10.1093/nar/gks042: 
+      #     "logdet is the sum of the logarithms of the diagonal elements of the Cholesky factor R."
+      # qr_result = qr(sqrt(weights) * adjusted_design_matrix[, is_active])
+      # coefs[-length(coefs)][is_active] = backsolve(qr.R(qr_result),
+      #                                              crossprod(qr.Q(qr_result), sqrt(weights) * adjusted_response))
+      dist(rbind(coefs_inner_prev, coefs[-length(coefs)][is_active]))
+      inner_iter = inner_iter + 1
+    }
+  
+    # update overdispersion parameter
+    if (!fix_overdispersion) {
+      coefs_prev = c(coefs[-length(coefs)][is_active], coefs[length(coefs)])
+      optimize_theta = optim(
+        par = log(coefs[length(coefs)]),
+        negloglik_adjusted_profile,
+        coefs = coefs,
+        cell_type_specific_variables = cell_type_specific_variables,
+        other_variables = other_variables,
+        read_depth = read_depth,
+        cellular_proportions = cellular_proportions,
+        counts = counts,
+        is_active = is_active,
+        method = "L-BFGS-B",
+        lower = -5,
+        upper = 10,
+        control = list(trace=2))
+      coefs[length(coefs)] = exp(optimize_theta$par)
+    } else {
+      break
+    }
+  }
+  
+  # likelihood without using adjusted profile likelihood
+  objective = negloglik(coefs = coefs,
+                        cell_type_specific_variables = cell_type_specific_variables,
+                        other_variables = other_variables,
+                        read_depth = read_depth,
+                        cellular_proportions = cellular_proportions,
+                        counts = counts)
+  
+  # # SEE
+  # tXWX = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
+  # rbind(estimates=coefs[-length(coefs)][is_active], SEE=sqrt(diag(solve(tXWX))))
+  
+  list(par = coefs, value = objective, fitted.values = mu)
+}
+
+#' negative adjusted profile log-likelihood function of a CARseq negative binomial model
+#' 
+#' \code{negloglik_adjusted_profile} provides a negative
+#' adjusted profile log-likelihood function 
+#' of negative binomial distribution 
+#' whose mean is a sum of nonnegative terms with covariates.
+#' This is used to estimate the overdispersion parameter.
+#'
+#' @param logtheta log(overdispersion) as a scalar.
+#' @param coefs a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,
+#'   gamma is a matrix of H x M dimension of cell type-specific non-negative coefficients, and overdispersion is a scalar.
+#'   The overdispersion in \code{coefs} is not used in calculating the likelihood.
+#' @param cell_type_specific_variables an array of n_B x H x K of cell type-independent variables.
+#' @param other_variables a design matrix of n_B x M of cell type-specific variables. Can be NULL.
+#' @param read_depth a vector of n_B sample-specific read depths.
+#' @param cellular_proportions a matrix of n_B x H of cellular proportions.
+#' @param counts A vector of n_B total read counts observed.
+#' @param is_active A logical vector recording which predictors are included in the model.
+#' 
+#' @examples
+#' library(CARseq)
+#' set.seed(1234)
+#' H = 4
+#' n_B = 60
+#' K = 1
+#' M = 3
+#' overdispersion_theta = 10
+#' coefs = c(rep(0, K), rep(1, H*M), overdispersion_theta)  # initial value
+#' cell_type_specific_variables = array(0, dim=c(n_B, H, M))
+#' cell_type_specific_variables[1:(n_B/3), , 1] = 1
+#' cell_type_specific_variables[(n_B/3+1):(n_B*2/3), , 2] = 1
+#' cell_type_specific_variables[(n_B*2/3+1):n_B, , 3] = 1
+#' other_variables = matrix(runif(n_B * K, min = -1, max = 1), nrow=n_B, ncol=K)
+#' read_depth = round(runif(n_B, min = 50, max = 100))
+#' cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
+#' cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
+#' counts = round(runif(n_B, min = 100, max = 200))
+#' is_active = rep(TRUE, K + H*M)
+#' negloglik_adjusted_profile(log(overdispersion_theta), coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+#' @references Davis J. McCarthy, Yunshun Chen, Gordon K. Smyth, Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation, \emph{Nucleic Acids Research}, Volume 40, Issue 10, 1 May 2012, Pages 4288-4297, https://doi.org/10.1093/nar/gks042
+#' @export
+negloglik_adjusted_profile = function(logtheta, 
+                                      coefs,
+                                      cell_type_specific_variables,
+                                      other_variables,
+                                      read_depth,
+                                      cellular_proportions,
+                                      counts, 
+                                      is_active = NULL) {
+  if (is.null(logtheta) || is.na(logtheta)) 
+    overdispersion = coefs[length(coefs)]
+  else
+    overdispersion = exp(logtheta)
+  # obtain H, M, K, n_B
+  n_B = length(counts)
+  if (is.null(other_variables)) other_variables = matrix(ncol = 0, nrow = n_B)
+  if (!is.array(cell_type_specific_variables)) {
+    stop("cell_type_specific_variables should be an array")
+  } else if (length(dim(cell_type_specific_variables)) != 3) {
+    stop("cell_type_specific_variables should be a 3-dimensional (n_B, H, M) array")
+  }
+  if (!is.matrix(other_variables)) stop("other_variables should be a matrix")
+  if (!is.matrix(cellular_proportions)) stop("cellular_proportions should be a matrix")
+  if (dim(cell_type_specific_variables)[1] != n_B) stop("Length of the 1st dimension in cell_type_specific_variables does not match the length of counts")
+  if (nrow(other_variables) != n_B) stop("Number of rows in other_variables does not match the length of counts")
+  if (nrow(cellular_proportions) != n_B) stop("Number of rows in cellular_proportions does not match the length of counts")
+  M = dim(cell_type_specific_variables)[3]
+  K = ncol(other_variables)
+  H = ncol(cellular_proportions)
+  if (length(coefs) != K + H * M + 1) stop("The length of coefs is not equal to K + H * M + 1")
+  if (is.null(is_active)) is_active = rep(TRUE, K + H * M)
+  
+  # split coefs into beta (cell type-independent) and gamma (cell type-specific)
+  beta = coefs[seq_len(K)]
+  gamma = matrix(coefs[seq_len(H * M) + K], nrow = H, ncol = M)
+  
+  covariate_adjusted_read_depth = exp(other_variables %*% matrix(beta, ncol=1, nrow=K)) * read_depth  # n_B x 1
+  mu_matrix = matrix(NA, n_B, H)
+  for (i in seq_len(n_B)) {
+    # read depth, other effects, cell type-specific effects
+    mu_matrix[i, ] = cellular_proportions[i, ] * matrixStats::rowProds(gamma ^ cell_type_specific_variables[i, , ])
+  }
+  mu_matrix = mu_matrix * as.numeric(covariate_adjusted_read_depth)
+  mu = rowSums(mu_matrix)
+  
+  # -1/2 logdet
+  weights = overdispersion / (mu * (mu+overdispersion))
+  adjusted_design_matrix = cbind(other_variables * mu,
+                                 matrix(cell_type_specific_variables, nrow=n_B) / rep(gamma, each=n_B) * as.numeric(mu_matrix))
+  qr_result = qr(sqrt(weights) * adjusted_design_matrix[, is_active])
+  logdet = sum(log(abs(diag(qr.R(qr_result)))))
+  
+  - sum(lgamma(counts + overdispersion) - lgamma(overdispersion) - lgamma(counts + 1) +
+          overdispersion*log(overdispersion) + counts*log(mu) -
+          (counts + overdispersion) * log(overdispersion+mu)) +
+    0.5 * logdet
+}
+
+
+#' gradient of negative log-likelihood of a negative binomial model
+#'
+#' \code{grad_negloglik} provides gradient of negative log-likelihood function
+#'  of negative binomial distribution 
+#' whose mean is a sum of nonnegative terms with covariates.
 #'
 #' @param coefs a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,
 #'   gamma is a matrix of H x M dimension of cell type-specific non-negative coefficients, and overdispersion is a scalar.
@@ -92,6 +371,7 @@ negloglik = function(coefs, cell_type_specific_variables, other_variables, read_
 #' @param read_depth a vector of n_B sample-specific read depths.
 #' @param cellular_proportions a matrix of n_B x H of cellular proportions.
 #' @param counts A vector of n_B total read counts observed.
+#' 
 #' @examples
 #' library(CARseq)
 #' set.seed(1234)

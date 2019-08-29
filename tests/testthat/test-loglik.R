@@ -94,15 +94,17 @@ test_that("The results from CARseq and glm.nb+nnls matches when there is no cell
   upper = c(rep(Inf, H*M), theta_max)
   lower = c(rep(1e-30, H*M), theta_min)
   
-  res_nlminb_full = stats::nlminb(start = x0, 
-                                  objective = CARseq::negloglik, gradient = CARseq::grad_negloglik, 
-                                  # hessian = hessian_negloglik,
-                                  control=list(eval.max=1000),
+  res_nlminb_full = stats::optim(par = x0, 
+                                  fn = CARseq::negloglik, gr = CARseq::grad_negloglik, 
                                   cell_type_specific_variables = cell_type_specific_variables,
                                   other_variables = NULL,
                                   read_depth = read_depth,
                                   cellular_proportions = cellular_proportions,
-                                  counts = counts)
+                                  counts = counts,
+                                  method = "L-BFGS-B",
+                                  control=list(maxit=1000),
+                                  lower = lower,
+                                  upper = upper)
   
   # glm.nb+nnls
   control = list(maxit = 200, trace = FALSE, epsilon = 1e-8)
@@ -152,15 +154,18 @@ test_that("The results from CARseq and glm.nb+nnls matches in a reduced model wh
   upper = c(rep(Inf, H*M), theta_max)
   lower = c(rep(1e-30, H*M), theta_min)
   
-  res_nlminb = stats::nlminb(start = x0, 
-                             objective = CARseq::negloglik, gradient = CARseq::grad_negloglik, 
-                             # hessian = hessian_negloglik,
-                             control=list(eval.max=1000),
-                             cell_type_specific_variables = cell_type_specific_variables_reduced,
-                             other_variables = NULL,
-                             read_depth = read_depth,
-                             cellular_proportions = cellular_proportions,
-                             counts = counts)
+  res_nlminb = stats::optim(par = x0, 
+                            fn = CARseq::negloglik, gr = CARseq::grad_negloglik, 
+                            cell_type_specific_variables = cell_type_specific_variables_reduced,
+                            other_variables = NULL,
+                            read_depth = read_depth,
+                            cellular_proportions = cellular_proportions,
+                            counts = counts,
+                            method = "L-BFGS-B",
+                            control=list(maxit=1000),
+                            lower = lower,
+                            upper = upper)
+  
   # transpose and only take the coefficients in reduced model
   res_nlminb_par_reduced = res_nlminb$par
   res_nlminb_par_reduced[which(is_reduced)] = NA
