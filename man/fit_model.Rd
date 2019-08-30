@@ -6,7 +6,7 @@
 \usage{
 fit_model(init = NULL, cell_type_specific_variables, other_variables,
   read_depth, cellular_proportions, counts, is_active = NULL,
-  fix_overdispersion = FALSE, non_negative = TRUE)
+  fix_overdispersion = FALSE)
 }
 \arguments{
 \item{init}{a numeric vector of (K + H x M + 1) corresponding to the initial value of
@@ -25,8 +25,6 @@ c(beta, gamma, overdispersion). Can be NULL.}
 \item{is_active}{A logical vector of length (K + H x M), recording which predictors are included in the model.}
 
 \item{fix_overdispersion}{logical. If \code{TRUE}, the overdispersion parameter will not be updated.}
-
-\item{overdispersion_theta_init}{initial value of overdispersion, parametrized as \code{theta} in \link[glm.nb]{MASS}.}
 }
 \description{
 \code{fit_model} fits a negative binomial distribution 
@@ -51,5 +49,5 @@ cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
 cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 counts = round(runif(n_B, min = 100, max = 200))
 is_active = rep(TRUE, K + H*M)
-fit_model(init, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+fit_model(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
 }

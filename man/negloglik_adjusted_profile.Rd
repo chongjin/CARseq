@@ -4,16 +4,18 @@
 \alias{negloglik_adjusted_profile}
 \title{negative adjusted profile log-likelihood function of a CARseq negative binomial model}
 \usage{
-negloglik_adjusted_profile(logtheta, coefs, cell_type_specific_variables,
-  other_variables, read_depth, cellular_proportions, counts,
-  is_active = NULL)
+negloglik_adjusted_profile(logtheta, mu_matrix, coefs,
+  cell_type_specific_variables, other_variables, read_depth,
+  cellular_proportions, counts, is_active = NULL)
 }
 \arguments{
-\item{logtheta}{log(overdispersion) as a scalar.}
+\item{logtheta}{log(overdispersion) as a scalar. Overdispersion is parametrized as \code{theta} in \link[MASS]{glm.nb}.}
+
+\item{mu_matrix}{cell type-specific fitted values from CARseq negative binomial model.}
 
 \item{coefs}{a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,
 gamma is a matrix of H x M dimension of cell type-specific non-negative coefficients, and overdispersion is a scalar.
-The overdispersion in \code{coefs} is not used in calculating the likelihood.}
+Note: only gamma is used in the evaluation here.}
 
 \item{cell_type_specific_variables}{an array of n_B x H x K of cell type-independent variables.}
 
@@ -53,7 +55,8 @@ cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
 cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 counts = round(runif(n_B, min = 100, max = 200))
 is_active = rep(TRUE, K + H*M)
-negloglik_adjusted_profile(log(overdispersion_theta), coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+res = negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
+negloglik_adjusted_profile(log(overdispersion_theta), attr(res, "cell.type.specific.fitted.values"), coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
 }
 \references{
 Davis J. McCarthy, Yunshun Chen, Gordon K. Smyth, Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation, \emph{Nucleic Acids Research}, Volume 40, Issue 10, 1 May 2012, Pages 4288-4297, https://doi.org/10.1093/nar/gks042
