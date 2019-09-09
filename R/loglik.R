@@ -164,10 +164,18 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
     stop("The length of coefs is not equal to K + H * M + 1")
   }
   
-  if (is.null(is_active)) is_active = rep(TRUE, K + H * M)
+  # set active set locally
+  is_active_curr = is_active
+  if (is.null(is_active_curr)) is_active_curr = rep(TRUE, K + H * M)
+  # some practical bounds to make the method work numerically:
+  maxcoef_log = 10
+  maxmu = 1e6
+  minmu = 1e-6
+  lower_bound = c(rep(-maxcoef_log, K), rep(minmu, H * M))
+  is_active_prev = is_active_curr
   
-  epsilon_convergence = 1e-6
-  maxiter = 20
+  epsilon_convergence = 1e-3
+  maxiter = 50
 
   overdispersion_theta = coefs[length(coefs)]
 
@@ -179,7 +187,8 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
   coefs_prev = coefs
   
   while (inner_iter == 0 ||
-          (negloglik_prev - negloglik_curr > epsilon_convergence &&
+          ((abs(negloglik_prev - negloglik_curr) > epsilon_convergence ||
+            !identical(is_active_prev, is_active_curr)) &&
            inner_iter < maxiter)) {
     # split coefs into beta (cell type-independent) and gamma (cell type-specific)
     beta = coefs[seq_len(K)]
@@ -199,28 +208,44 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
     adjusted_response = adjusted_design_matrix %*% coefs[-length(coefs)] + (counts - mu)
     
     # current negative log-likelihood:
+    negloglik_prev = negloglik_curr
     negloglik_curr = - sum(lgamma(counts + overdispersion_theta) - lgamma(overdispersion_theta) - lgamma(counts + 1) +
             overdispersion_theta*log(overdispersion_theta) + counts*log(mu) -
             (counts + overdispersion_theta) * log(overdispersion_theta+mu))
+    # print(negloglik_curr)
     
-    # iterative bvls can get us inside an infinite loop. Need to check if negative log-likelihood is still decreasing:
-    if (negloglik_curr > negloglik_prev) {
-      coefs = coefs_prev
-      break
+    # current active set is changed:
+    if (abs(negloglik_curr - negloglik_prev) < epsilon_convergence) {
+      is_active_prev = is_active_curr
+      is_active_curr = is_active_prev & (coefs[-length(coefs)] > lower_bound + epsilon_convergence)
     }
+      
+    # # iterative bvls can get us inside an infinite loop. Need to check if negative log-likelihood is still decreasing:
+    # if (negloglik_curr >= negloglik_prev) {
+    #   coefs = coefs_prev
+    #   break
+    # }
     
     # need to roll back if we find the negative-loglikelihood starts to increase:
     coefs_prev = coefs
     
-    # some practical bounds to make the method work numerically:
-    maxcoef_log = 10
-    maxmu = 1e6
-    minmu = 1e-6
     # bounded-variable least squares ensures that the active parameters in H*M cell type-specific ones are bounded
-    coefs[-length(coefs)][is_active] = bvls::bvls(adjusted_design_matrix[, is_active] * sqrt(weights),
-                                                  adjusted_response * sqrt(weights),
-                                                  bl = c(rep(-maxcoef_log, K), rep(minmu, sum(is_active) - K)),
-                                                  bu = c(rep( maxcoef_log, K), rep(maxmu, sum(is_active) - K)))$x
+    # coefs[-length(coefs)][is_active_curr] = bvls::bvls(adjusted_design_matrix[, is_active_curr] * sqrt(weights),
+    #   adjusted_response * sqrt(weights),
+    #   bl = c(rep(-maxcoef_log, K), rep(minmu, sum(is_active_curr) - K)),
+    #   bu = c(rep( maxcoef_log, K), rep(maxmu, sum(is_active_curr) - K)))$x
+
+    newfit = stats::lsfit(adjusted_design_matrix[, is_active_curr], adjusted_response, wt=weights, intercept=FALSE)$coef
+    ind_min = K + which.min(newfit[K + seq_len(sum(is_active_curr) - K)])
+    # ind_min = K + which.min(newfit[K + which(is_active_curr[K+seq(H*M)]]))
+    if (newfit[ind_min] < minmu) {
+      lambda = (coefs[is_active_curr][ind_min] - minmu) / (coefs[is_active_curr][ind_min] - newfit[ind_min])
+      coefs[-length(coefs)][is_active_curr] = coefs[-length(coefs)][is_active_curr] * (1 - lambda) + newfit * lambda
+    } else {
+      coefs[-length(coefs)][is_active_curr] = newfit
+    }
+
+    
     # lsfit cannot guarantee non-negativity:
       # coefs[-length(coefs)][is_active] = stats::lsfit(adjusted_design_matrix[, is_active], adjusted_response, wt=weights, intercept=FALSE)$coef
 
@@ -235,6 +260,9 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
     inner_iter = inner_iter + 1
   }
   
+  # throw a warning of maxiter reached
+  if (inner_iter == maxiter) warning("Max number of iterations has been reached!")
+  
   # likelihood without updated overdispersion
   objective_old_overdispersion = negloglik(coefs = coefs,
                         cell_type_specific_variables = cell_type_specific_variables,
@@ -245,7 +273,6 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
 
   # update overdispersion parameter
   if (!fix_overdispersion) {
-    coefs_prev = c(coefs[-length(coefs)][is_active], coefs[length(coefs)])
     optimize_theta = stats::optim(
       par = log(coefs[length(coefs)]),
       negloglik_adjusted_profile,
@@ -256,14 +283,13 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
       read_depth = read_depth,
       cellular_proportions = cellular_proportions,
       counts = counts,
-      is_active = is_active,
+      is_active = is_active_curr,
       method = "L-BFGS-B",
       lower = -5,
       upper = 10
       )
     coefs[length(coefs)] = exp(optimize_theta$par)
   }
-
   
   # finally, a likelihood without using adjusted profile likelihood
   objective = negloglik(coefs = coefs,
@@ -273,11 +299,30 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
                         cellular_proportions = cellular_proportions,
                         counts = counts)
   
+  # stats::optim(
+  #   par = coefs,
+  #   fn = negloglik,
+  #   gr = grad_negloglik,
+  #   cell_type_specific_variables = cell_type_specific_variables,
+  #   other_variables = other_variables,
+  #   read_depth = read_depth,
+  #   cellular_proportions = cellular_proportions,
+  #   counts = counts,
+  #   method = "L-BFGS-B",
+  #   lower = c(rep(-maxcoef_log, K), rep(minmu, H * M), coefs[length(coefs)]),
+  #   upper = c(rep( maxcoef_log, K), rep(maxmu, H * M), coefs[length(coefs)]),
+  #   control = list(trace = 2)
+  # )
+  
+  
   # # SEE
   # tXWX = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
   # rbind(estimates=coefs[-length(coefs)][is_active], SEE=sqrt(diag(solve(tXWX))))
   
-  list(par = coefs, value = as.numeric(objective), cell.type.specific.fitted.values = attr(objective, "cell.type.specific.fitted.values"))
+  list(par = coefs, 
+       value = as.numeric(objective),
+       cell.type.specific.fitted.values = attr(objective, "cell.type.specific.fitted.values"),
+       is_active = is_active_curr)
 }
 
 #' negative adjusted profile log-likelihood function of a CARseq negative binomial model

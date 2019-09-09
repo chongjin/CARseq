@@ -1,13 +1,13 @@
 Package: CARseq
 Type: Package
-Title: What the package does (short line)
-Version: 0.0.0.9002
-Date: 2019-08-10
-Author: Who wrote it
-Maintainer: Who to complain to <yourfault@somewhere.net>
-Description: More about what it does (maybe more than one line)
+Title: Cell type-specific differential analysis of count data
+Version: 0.0.0.9003
+Date: 2019-09-08
+Author: Chong Jin, Wei Sun
+Maintainer: Chong Jin <chongjin@live.unc.edu>
+Description: Cell type-specific differential analysis of count data
 Encoding: UTF-8
-License: What license is it under?
+License: GPL (>= 3)
 Imports: Rcpp, RcppEigen, matrixStats, nloptr, MASS, zetadiv, bvls
 LinkingTo: Rcpp, RcppEigen
 Suggests: 
