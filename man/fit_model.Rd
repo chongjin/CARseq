@@ -6,7 +6,7 @@
 \usage{
 fit_model(init = NULL, cell_type_specific_variables, other_variables,
   read_depth, cellular_proportions, counts, is_active = NULL,
-  fix_overdispersion = FALSE)
+  fix_overdispersion = FALSE, number_of_resample = 20)
 }
 \arguments{
 \item{init}{a numeric vector of (K + H x M + 1) corresponding to the initial value of
@@ -25,6 +25,8 @@ c(beta, gamma, overdispersion). Can be NULL.}
 \item{is_active}{A logical vector of length (K + H x M), recording which predictors are included in the model.}
 
 \item{fix_overdispersion}{logical. If \code{TRUE}, the overdispersion parameter will not be updated.}
+
+\item{number_of_resample}{numeric.}
 }
 \description{
 \code{fit_model} fits a negative binomial distribution 

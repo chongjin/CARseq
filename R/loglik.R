@@ -107,6 +107,7 @@ negloglik = function(coefs, cell_type_specific_variables, other_variables, read_
 #' @param counts A vector of n_B total read counts observed.
 #' @param is_active A logical vector of length (K + H x M), recording which predictors are included in the model.
 #' @param fix_overdispersion logical. If \code{TRUE}, the overdispersion parameter will not be updated.
+#' @param number_of_resample numeric. 
 #'
 #' @examples
 #' library(CARseq)
@@ -128,7 +129,10 @@ negloglik = function(coefs, cell_type_specific_variables, other_variables, read_
 #' fit_model(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
 #' @export
 fit_model = function(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts,
-                     is_active = NULL, fix_overdispersion = FALSE) {
+                     is_active = NULL, fix_overdispersion = FALSE, number_of_resample = 20) {
+  
+  # set seed because we will use resampling to generate multiple initial values:
+  set.seed(1234)
   
   # obtain H, M, K, n_B
   n_B = length(counts)
@@ -147,132 +151,178 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
   K = ncol(other_variables)
   H = ncol(cellular_proportions)
   coefs = init
-  if (is.null(init)) {
-    # initialize using MASS::glm.nb
-    if (K == 0) {
-      nbmodel = MASS::glm.nb(counts~offset(log(read_depth)))
-    } else {
-      nbmodel = MASS::glm.nb(counts~offset(log(read_depth))+other_variables)
-    }
-    # coefs = c(rep(0, K), rep(1, H * M), overdispersion=100)
-    coefs = c(nbmodel$coefficients[-1],                         # cell type-independent variables
-              rep(exp(nbmodel$coefficients[1]), H * M),         # cell type-specific variables
-              overdispersion = nbmodel$theta)
-    
-    # TODO: use cooks.distance() and fitted() to process the outliers
-  } else if (length(coefs) != K + H * M + 1) {
-    stop("The length of coefs is not equal to K + H * M + 1")
-  }
+  if (is.null(is_active)) is_active = rep(TRUE, K + H * M)
   
-  # set active set locally
-  is_active_curr = is_active
-  if (is.null(is_active_curr)) is_active_curr = rep(TRUE, K + H * M)
-  # some practical bounds to make the method work numerically:
-  maxcoef_log = 10
-  maxmu = 1e6
-  minmu = 1e-6
-  lower_bound = c(rep(-maxcoef_log, K), rep(minmu, H * M))
-  is_active_prev = is_active_curr
+  # We need to sample many times to decide on an initial value.
+  if (is.null(number_of_resample) || is.na(number_of_resample)) number_of_resample = 20
+  # We only need number_of_resample different initial values and subsequent model fits.
+  # However, we can try at most number_of_resample_max times.
+  number_of_resample_max = number_of_resample * 2
+  resample_size_list = rep(3 * (K + H * M), number_of_resample_max)    # An arbitrary number that should be larger than the number of parameters in the model
+  resample_size_list[1] = n_B    # in the first instance, the initial value is based on all samples instead of a small subset of samples
   
-  epsilon_convergence = 1e-3
-  maxiter = 50
-
-  overdispersion_theta = coefs[length(coefs)]
-
-  # variables to control the loop:
-  # the negative log-likelihood needs to decrease.
-  # break the loop if it does not decrease a lot, or it increases:
-  inner_iter = 0
-  negloglik_prev = negloglik_curr = Inf
-  coefs_prev = coefs
+  if (fix_overdispersion) init_overdispersion = coefs[length(coefs)]
   
-  while (inner_iter == 0 ||
-          ((abs(negloglik_prev - negloglik_curr) > epsilon_convergence ||
-            !identical(is_active_prev, is_active_curr)) &&
-           inner_iter < maxiter)) {
-    # split coefs into beta (cell type-independent) and gamma (cell type-specific)
-    beta = coefs[seq_len(K)]
-    gamma = matrix(coefs[seq_len(H * M) + K], nrow = H, ncol = M)
-    covariate_adjusted_read_depth = exp(other_variables %*% matrix(beta, ncol=1, nrow=K)) * read_depth  # n_B x 1
-    mu_matrix = matrix(NA, n_B, H)
-    for (i in seq_len(n_B)) {
-      # read depth, other effects, cell type-specific effects
-      mu_matrix[i, ] = cellular_proportions[i, ] * matrixStats::rowProds(gamma ^ cell_type_specific_variables[i, , ])
-    }
-    mu_matrix = mu_matrix * as.numeric(covariate_adjusted_read_depth)
-    mu = rowSums(mu_matrix)
-    weights = overdispersion_theta / (mu * (mu+overdispersion_theta))
-    adjusted_design_matrix = cbind(other_variables * mu,
-                                   matrix(cell_type_specific_variables, nrow=n_B) / rep(gamma, each=n_B) * as.numeric(mu_matrix))
+  negloglik_best = NULL
+  coefs_best = NULL
+  number_of_successful_iter = 0
+  
+  # Need to generate multiple initial values. 
+  # If we have initial value, we need to use it first.
+  for (iter in seq_len(number_of_resample_max)) {
+    resample_size = resample_size_list[iter]
     
-    adjusted_response = adjusted_design_matrix %*% coefs[-length(coefs)] + (counts - mu)
+    tryCatch({
     
-    # current negative log-likelihood:
-    negloglik_prev = negloglik_curr
-    negloglik_curr = - sum(lgamma(counts + overdispersion_theta) - lgamma(overdispersion_theta) - lgamma(counts + 1) +
-            overdispersion_theta*log(overdispersion_theta) + counts*log(mu) -
-            (counts + overdispersion_theta) * log(overdispersion_theta+mu))
-    # print(negloglik_curr)
-    
-    # current active set is changed:
-    if (abs(negloglik_curr - negloglik_prev) < epsilon_convergence) {
-      is_active_prev = is_active_curr
-      is_active_curr = is_active_prev & (coefs[-length(coefs)] > lower_bound + epsilon_convergence)
-    }
+      # generate initial value using glm and a subset of samples. Similar to "bootstrap root search" in the literature.
+      if (K == 0) {
+        nbmodel = MASS::glm.nb(counts~offset(log(read_depth)),
+                               subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))))
+      } else {
+        nbmodel = MASS::glm.nb(counts~offset(log(read_depth))+other_variables, 
+                               subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))))
+      }
+     
+      if (is.null(init)) {
+        # initialize using MASS::glm.nb
+        coefs = c(nbmodel$coefficients[-1],                         # cell type-independent variables
+                  rep(exp(nbmodel$coefficients[1]), H * M),         # cell type-specific variables
+                  overdispersion = nbmodel$theta)
+        coefs[is.na(coefs)] = 0
+        
+        # TODO: use cooks.distance() and fitted() to process the outliers
+      } else if (length(coefs) != K + H * M + 1) {
+        stop("The length of coefs is not equal to K + H * M + 1")
+      }
       
-    # # iterative bvls can get us inside an infinite loop. Need to check if negative log-likelihood is still decreasing:
-    # if (negloglik_curr >= negloglik_prev) {
-    #   coefs = coefs_prev
-    #   break
-    # }
+      if (fix_overdispersion) {
+        coefs[length(coefs)] = init_overdispersion
+      }
+      
+      # some practical bounds to make the method work numerically:
+      maxcoef_log = 50
+      maxmu = 1e6
+      minmu = 1e-6
+      
+      epsilon_convergence = 1e-3
+      maxiter = 20
+      
+      overdispersion_theta = coefs[length(coefs)]
+      
+      # variables to control the loop:
+      # the negative log-likelihood needs to decrease.
+      # break the loop if it does not decrease a lot, or it increases:
+      inner_iter = 0
+      negloglik_prev = negloglik_curr = Inf
+      coefs_prev = coefs
+      
+      while (inner_iter == 0 ||
+           (abs(negloglik_prev - negloglik_curr) > epsilon_convergence
+            &&
+            inner_iter < maxiter)) {
+      
+        # split coefs into beta (cell type-independent) and gamma (cell type-specific)
+        beta = coefs[seq_len(K)]
+        gamma = matrix(coefs[seq_len(H * M) + K], nrow = H, ncol = M)
+        covariate_adjusted_read_depth = exp(other_variables %*% matrix(beta, ncol=1, nrow=K)) * read_depth  # n_B x 1
+        mu_matrix = matrix(NA, n_B, H)
+        for (i in seq_len(n_B)) {
+          # read depth, other effects, cell type-specific effects
+          mu_matrix[i, ] = cellular_proportions[i, ] * matrixStats::rowProds(gamma ^ cell_type_specific_variables[i, , ])
+        }
+        mu_matrix = mu_matrix * as.numeric(covariate_adjusted_read_depth)
+        mu = rowSums(mu_matrix)
+        weights = overdispersion_theta / (mu * (mu+overdispersion_theta))
+        adjusted_design_matrix = cbind(other_variables * mu,
+                                       matrix(cell_type_specific_variables, nrow=n_B) / rep(gamma, each=n_B) * as.numeric(mu_matrix))
+        
+        adjusted_response = adjusted_design_matrix %*% coefs[-length(coefs)] + (counts - mu)
+        
+        # current negative log-likelihood:
+        negloglik_prev = negloglik_curr
+        negloglik_curr = - sum(lgamma(counts + overdispersion_theta) - lgamma(overdispersion_theta) - lgamma(counts + 1) +
+                                 overdispersion_theta*log(overdispersion_theta) + counts*log(mu) -
+                                 (counts + overdispersion_theta) * log(overdispersion_theta+mu))
+        if (!is.finite(negloglik_curr)) break
+        
+        # save the best coefs and negative log-likelihood
+        if (is.null(negloglik_best) || negloglik_curr < negloglik_best) {
+          coefs_best = coefs
+          negloglik_best = negloglik_curr   # the matching coefs should be coefs_prev, but it would not matter anyway when converged
+        }
+        
+        print(negloglik_curr)
+        if (!is.finite(negloglik_curr)) next
+        
+        
+        # need to roll back if we find the negative-loglikelihood starts to increase:
+        coefs_prev = coefs
+        
+        # bounded-variable least squares ensures that the active parameters in H*M cell type-specific ones are bounded
+        coefs[-length(coefs)][is_active] = bvls::bvls(adjusted_design_matrix[, is_active] * sqrt(weights),
+                                                      adjusted_response * sqrt(weights),
+                                                      bl = c(rep(-maxcoef_log, K), rep(minmu, sum(is_active) - K)),
+                                                      bu = c(rep( maxcoef_log, K), rep(maxmu, sum(is_active) - K)))$x
+        
+        # newfit = stats::lsfit(adjusted_design_matrix[, is_active], adjusted_response, wt=weights, intercept=FALSE)$coef
+        # ind_min = K + which.min(newfit[K + seq_len(sum(is_active) - K)])
+        # # ind_min = K + which.min(newfit[K + which(is_active[K+seq(H*M)]]))
+        # if (newfit[ind_min] < minmu) {
+        #   lambda = (coefs[is_active][ind_min] - minmu) / (coefs[is_active][ind_min] - newfit[ind_min])
+        #   coefs[-length(coefs)][is_active] = coefs[-length(coefs)][is_active] * (1 - lambda) + newfit * lambda
+        # } else {
+        #   coefs[-length(coefs)][is_active] = newfit
+        # }
+        
+        # lsfit cannot guarantee non-negativity:
+        # coefs[-length(coefs)][is_active] = stats::lsfit(adjusted_design_matrix[, is_active], adjusted_response, wt=weights, intercept=FALSE)$coef
+        
+        # Least squares can be fitted directly using QR decomposition
+        # See https://math.stackexchange.com/questions/852327/efficient-algorithm-for-iteratively-reweighted-least-squares-problem
+        # See https://doi.org/10.1093/nar/gks042: 
+        #     "logdet is the sum of the logarithms of the diagonal elements of the Cholesky factor R."
+        # qr_result = qr(sqrt(weights) * adjusted_design_matrix[, is_active])
+        # coefs[-length(coefs)][is_active] = backsolve(qr.R(qr_result),
+        #                                              crossprod(qr.Q(qr_result), sqrt(weights) * adjusted_response))
+        
+        inner_iter = inner_iter + 1
+      
+      }
+      
+      # throw a warning of maxiter reached
+      if (inner_iter == maxiter) {
+        warning("Max number of iterations has been reached.")
+      }
+      
+      number_of_successful_iter = number_of_successful_iter + 1
+      
+      if (number_of_successful_iter == number_of_resample) break
     
-    # need to roll back if we find the negative-loglikelihood starts to increase:
-    coefs_prev = coefs
+    }, error = function(e) {warning("Iteration has failed.")}, warning = function(w) {warning(w)})
     
-    # bounded-variable least squares ensures that the active parameters in H*M cell type-specific ones are bounded
-    # coefs[-length(coefs)][is_active_curr] = bvls::bvls(adjusted_design_matrix[, is_active_curr] * sqrt(weights),
-    #   adjusted_response * sqrt(weights),
-    #   bl = c(rep(-maxcoef_log, K), rep(minmu, sum(is_active_curr) - K)),
-    #   bu = c(rep( maxcoef_log, K), rep(maxmu, sum(is_active_curr) - K)))$x
-
-    newfit = stats::lsfit(adjusted_design_matrix[, is_active_curr], adjusted_response, wt=weights, intercept=FALSE)$coef
-    ind_min = K + which.min(newfit[K + seq_len(sum(is_active_curr) - K)])
-    # ind_min = K + which.min(newfit[K + which(is_active_curr[K+seq(H*M)]]))
-    if (newfit[ind_min] < minmu) {
-      lambda = (coefs[is_active_curr][ind_min] - minmu) / (coefs[is_active_curr][ind_min] - newfit[ind_min])
-      coefs[-length(coefs)][is_active_curr] = coefs[-length(coefs)][is_active_curr] * (1 - lambda) + newfit * lambda
-    } else {
-      coefs[-length(coefs)][is_active_curr] = newfit
-    }
-
+    # We will generate initial values from glm next iteration:
+    init = NULL
+    cat("\n")
     
-    # lsfit cannot guarantee non-negativity:
-      # coefs[-length(coefs)][is_active] = stats::lsfit(adjusted_design_matrix[, is_active], adjusted_response, wt=weights, intercept=FALSE)$coef
-
-    # Least squares can be fitted directly using QR decomposition
-    # See https://math.stackexchange.com/questions/852327/efficient-algorithm-for-iteratively-reweighted-least-squares-problem
-    # See https://doi.org/10.1093/nar/gks042: 
-    #     "logdet is the sum of the logarithms of the diagonal elements of the Cholesky factor R."
-    # qr_result = qr(sqrt(weights) * adjusted_design_matrix[, is_active])
-    # coefs[-length(coefs)][is_active] = backsolve(qr.R(qr_result),
-    #                                              crossprod(qr.Q(qr_result), sqrt(weights) * adjusted_response))
-    
-    inner_iter = inner_iter + 1
   }
   
-  # throw a warning of maxiter reached
-  if (inner_iter == maxiter) warning("Max number of iterations has been reached!")
+  # throw error if we do not have number_of_resample successful tries:
+  if (number_of_successful_iter != number_of_resample) stop("Optimization using different initial values has failed too many times!")
   
-  # likelihood without updated overdispersion
-  objective_old_overdispersion = negloglik(coefs = coefs,
-                        cell_type_specific_variables = cell_type_specific_variables,
-                        other_variables = other_variables,
-                        read_depth = read_depth,
-                        cellular_proportions = cellular_proportions,
-                        counts = counts)
+  # The best solution after using multiple initial values:
+  coefs = coefs_best
 
   # update overdispersion parameter
   if (!fix_overdispersion) {
+    
+    # likelihood without updated overdispersion
+    objective_old_overdispersion = negloglik(coefs = coefs,
+                                             cell_type_specific_variables = cell_type_specific_variables,
+                                             other_variables = other_variables,
+                                             read_depth = read_depth,
+                                             cellular_proportions = cellular_proportions,
+                                             counts = counts)
+    
     optimize_theta = stats::optim(
       par = log(coefs[length(coefs)]),
       negloglik_adjusted_profile,
@@ -283,7 +333,7 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
       read_depth = read_depth,
       cellular_proportions = cellular_proportions,
       counts = counts,
-      is_active = is_active_curr,
+      is_active = is_active,
       method = "L-BFGS-B",
       lower = -5,
       upper = 10
@@ -299,30 +349,14 @@ fit_model = function(init = NULL, cell_type_specific_variables, other_variables,
                         cellular_proportions = cellular_proportions,
                         counts = counts)
   
-  # stats::optim(
-  #   par = coefs,
-  #   fn = negloglik,
-  #   gr = grad_negloglik,
-  #   cell_type_specific_variables = cell_type_specific_variables,
-  #   other_variables = other_variables,
-  #   read_depth = read_depth,
-  #   cellular_proportions = cellular_proportions,
-  #   counts = counts,
-  #   method = "L-BFGS-B",
-  #   lower = c(rep(-maxcoef_log, K), rep(minmu, H * M), coefs[length(coefs)]),
-  #   upper = c(rep( maxcoef_log, K), rep(maxmu, H * M), coefs[length(coefs)]),
-  #   control = list(trace = 2)
-  # )
-  
-  
-  # # SEE
-  # tXWX = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
+  # SEE
+  tXWX = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
   # rbind(estimates=coefs[-length(coefs)][is_active], SEE=sqrt(diag(solve(tXWX))))
   
   list(par = coefs, 
        value = as.numeric(objective),
        cell.type.specific.fitted.values = attr(objective, "cell.type.specific.fitted.values"),
-       is_active = is_active_curr)
+       hessian = tXWX)
 }
 
 #' negative adjusted profile log-likelihood function of a CARseq negative binomial model
