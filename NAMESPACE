@@ -2,9 +2,11 @@
 
 export(fit_model)
 export(fit_model_wls)
+export(fit_model_wls_backtracking)
 export(grad_negloglik)
 export(negloglik)
 export(negloglik_adjusted_profile)
+export(negloglik_logscale)
 export(rcppeigen_bothproducts)
 export(rcppeigen_hello_world)
 export(rcppeigen_innerproduct)
