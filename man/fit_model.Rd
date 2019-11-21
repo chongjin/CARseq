@@ -2,16 +2,15 @@
 % Please edit documentation in R/loglik.R
 \name{fit_model}
 \alias{fit_model}
-\title{fit a CARseq negative binomial model}
+\title{fit a CARseq negative binomial model using wls (instead of bvls or nnls)
+and backtracking line search.}
 \usage{
-fit_model(init = NULL, cell_type_specific_variables, other_variables,
-  read_depth, cellular_proportions, counts, is_active = NULL,
-  fix_overdispersion = FALSE, number_of_resample = 20)
+fit_model(cell_type_specific_variables, other_variables, read_depth,
+  cellular_proportions, counts, init = NULL,
+  fix_overdispersion = FALSE, number_of_resample = 1,
+  use_log_scale_algorithm = FALSE)
 }
 \arguments{
-\item{init}{a numeric vector of (K + H x M + 1) corresponding to the initial value of
-c(beta, gamma, overdispersion). Can be NULL.}
-
 \item{cell_type_specific_variables}{an array of n_B x H x K of cell type-independent variables.}
 
 \item{other_variables}{a design matrix of n_B x M of cell type-specific variables. Can be NULL.}
@@ -22,11 +21,14 @@ c(beta, gamma, overdispersion). Can be NULL.}
 
 \item{counts}{A vector of n_B total read counts observed.}
 
-\item{is_active}{A logical vector of length (K + H x M), recording which predictors are included in the model.}
+\item{init}{a numeric vector of (K + H x M + 1) corresponding to the initial value of
+c(beta, gamma, overdispersion). Can be NULL.}
 
 \item{fix_overdispersion}{logical. If \code{TRUE}, the overdispersion parameter will not be updated.}
 
 \item{number_of_resample}{numeric.}
+
+\item{is_active}{A logical vector of length (K + H x M), recording which predictors are included in the model.}
 }
 \description{
 \code{fit_model} fits a negative binomial distribution 
@@ -51,6 +53,6 @@ cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
 cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 counts = round(runif(n_B, min = 100, max = 200))
 is_active = rep(TRUE, K + H*M)
-res = fit_model(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+res = fit_model_wls(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
 str(res)
 }
