@@ -16,8 +16,8 @@ test_that("the analytic gradient is the same as numerical gradient", {
   cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
   counts = round(runif(n_B, min = 100, max = 200))
   grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
-  expect_equal(grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts),
-               nloptr::nl.grad(coefs, negloglik, cell_type_specific_variables=cell_type_specific_variables, other_variables=other_variables, read_depth=read_depth, cellular_proportions=cellular_proportions, counts=counts))
+  expect_equal(CARseq:::grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts),
+               nloptr::nl.grad(coefs, CARseq:::negloglik, cell_type_specific_variables=cell_type_specific_variables, other_variables=other_variables, read_depth=read_depth, cellular_proportions=cellular_proportions, counts=counts))
 })
 
 test_that("the analytic gradient is the same as numerical gradient when there is no cell type-independent variables", {
@@ -38,8 +38,8 @@ test_that("the analytic gradient is the same as numerical gradient when there is
   cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
   counts = round(runif(n_B, min = 100, max = 200))
   grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
-  expect_equal(grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts),
-               nloptr::nl.grad(coefs, negloglik, cell_type_specific_variables=cell_type_specific_variables, other_variables=other_variables, read_depth=read_depth, cellular_proportions=cellular_proportions, counts=counts))
+  expect_equal(CARseq:::grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts),
+               nloptr::nl.grad(coefs, CARseq:::negloglik, cell_type_specific_variables=cell_type_specific_variables, other_variables=other_variables, read_depth=read_depth, cellular_proportions=cellular_proportions, counts=counts))
 })
 
 test_that("the analytic gradient is the same as numerical gradient in a reduced model", {
@@ -62,8 +62,8 @@ test_that("the analytic gradient is the same as numerical gradient in a reduced 
   cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
   counts = round(runif(n_B, min = 100, max = 200))
   grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
-  expect_equal(grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts),
-               nloptr::nl.grad(coefs, negloglik, cell_type_specific_variables=cell_type_specific_variables, other_variables=other_variables, read_depth=read_depth, cellular_proportions=cellular_proportions, counts=counts))
+  expect_equal(CARseq:::grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts),
+               nloptr::nl.grad(coefs, CARseq:::negloglik, cell_type_specific_variables=cell_type_specific_variables, other_variables=other_variables, read_depth=read_depth, cellular_proportions=cellular_proportions, counts=counts))
 })
 
 test_that("The results from CARseq and glm.nb+nnls matches when there is no cell type-independent variables", {
@@ -95,7 +95,7 @@ test_that("The results from CARseq and glm.nb+nnls matches when there is no cell
   lower = c(rep(1e-30, H*M), theta_min)
   
   res_nlminb_full = stats::optim(par = x0, 
-                                  fn = CARseq::negloglik, gr = CARseq::grad_negloglik, 
+                                  fn = CARseq:::negloglik, gr = CARseq:::grad_negloglik, 
                                   cell_type_specific_variables = cell_type_specific_variables,
                                   other_variables = NULL,
                                   read_depth = read_depth,
@@ -109,6 +109,7 @@ test_that("The results from CARseq and glm.nb+nnls matches when there is no cell
   # glm.nb+nnls
   control = list(maxit = 200, trace = FALSE, epsilon = 1e-8)
   
+  glm.fit.cons.nonneg=function(...) {zetadiv::glm.fit.cons(cons=1, ...)}
   res_glmnb_full = MASS::glm.nb(counts ~ 0 + cellular_proportions:read_depth:(x==1),
                                 method="glm.fit.cons.nonneg", link="identity", control = control)
   
@@ -155,7 +156,7 @@ test_that("The results from CARseq and glm.nb+nnls matches in a reduced model wh
   lower = c(rep(1e-30, H*M), theta_min)
   
   res_nlminb = stats::optim(par = x0, 
-                            fn = CARseq::negloglik, gr = CARseq::grad_negloglik, 
+                            fn = CARseq:::negloglik, gr = CARseq:::grad_negloglik, 
                             cell_type_specific_variables = cell_type_specific_variables_reduced,
                             other_variables = NULL,
                             read_depth = read_depth,

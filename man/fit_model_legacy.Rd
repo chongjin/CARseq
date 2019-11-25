@@ -56,6 +56,6 @@ cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
 cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 counts = round(runif(n_B, min = 100, max = 200))
 is_active = rep(TRUE, K + H*M)
-res = fit_model_legacy(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+res = CARseq:::fit_model_legacy(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
 str(res)
 }

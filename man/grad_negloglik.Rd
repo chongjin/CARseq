@@ -2,7 +2,7 @@
 % Please edit documentation in R/loglik.R
 \name{grad_negloglik}
 \alias{grad_negloglik}
-\title{gradient of negative log-likelihood of a negative binomial model}
+\title{Gradient of negative log-likelihood of a negative binomial model}
 \usage{
 grad_negloglik(coefs, cell_type_specific_variables, other_variables,
   read_depth, cellular_proportions, counts)
@@ -26,6 +26,9 @@ gamma is a matrix of H x M dimension of cell type-specific non-negative coeffici
  of negative binomial distribution 
 whose mean is a sum of nonnegative terms with covariates.
 }
+\details{
+The cell type-specific effects are parametrized on a non-log scale.
+}
 \examples{
 library(CARseq)
 set.seed(1234)
@@ -43,5 +46,5 @@ read_depth = round(runif(n_B, min = 50, max = 100))
 cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
 cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 counts = round(runif(n_B, min = 100, max = 200))
-grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
+CARseq:::grad_negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
 }

@@ -6,7 +6,8 @@
 \usage{
 negloglik_adjusted_profile(logtheta, mu_matrix, coefs,
   cell_type_specific_variables, other_variables, read_depth,
-  cellular_proportions, counts, is_active = NULL)
+  cellular_proportions, counts, is_active = NULL,
+  use_log_scale_params = FALSE)
 }
 \arguments{
 \item{logtheta}{log(overdispersion) as a scalar. Overdispersion is parametrized as \code{theta} in \link[MASS]{glm.nb}.}
@@ -28,6 +29,9 @@ Note: only gamma is used in the evaluation here.}
 \item{counts}{A vector of n_B total read counts observed.}
 
 \item{is_active}{A logical vector recording which predictors are included in the model.}
+
+\item{use_log_scale_params}{logical. The default is FALSE, where the cell type-specific effects are
+parametrized on a non-log scale. Otherwise, they are parametrized on a log scale.}
 }
 \description{
 \code{negloglik_adjusted_profile} provides a negative
@@ -55,8 +59,8 @@ cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
 cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 counts = round(runif(n_B, min = 100, max = 200))
 is_active = rep(TRUE, K + H*M)
-res = negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
-negloglik_adjusted_profile(log(overdispersion_theta), attr(res, "cell.type.specific.fitted.values"), coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+res = CARseq:::negloglik(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, verbose=TRUE)
+CARseq:::negloglik_adjusted_profile(log(overdispersion_theta), attr(res, "cell.type.specific.fitted.values"), coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
 }
 \references{
 Davis J. McCarthy, Yunshun Chen, Gordon K. Smyth, Differential expression analysis of multifactor RNA-Seq experiments with respect to biological variation, \emph{Nucleic Acids Research}, Volume 40, Issue 10, 1 May 2012, Pages 4288-4297, https://doi.org/10.1093/nar/gks042

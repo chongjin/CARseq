@@ -2,20 +2,23 @@
 % Please edit documentation in R/loglik.R
 \name{fit_model}
 \alias{fit_model}
-\title{fit a CARseq negative binomial model using wls (instead of bvls or nnls)
-and backtracking line search.}
+\title{fit a CARseq negative binomial model 
+using iteratively weighted least squares / non-negative least squares
+with backtracking line search.}
 \usage{
 fit_model(cell_type_specific_variables, other_variables, read_depth,
   cellular_proportions, counts, init = NULL,
   fix_overdispersion = FALSE, number_of_resample = 1,
-  use_log_scale_algorithm = FALSE)
+  use_log_scale_algorithm = FALSE, verbose = TRUE)
 }
 \arguments{
 \item{cell_type_specific_variables}{an array of n_B x H x K of cell type-independent variables.}
 
 \item{other_variables}{a design matrix of n_B x M of cell type-specific variables. Can be NULL.}
 
-\item{read_depth}{a vector of n_B sample-specific read depths.}
+\item{read_depth}{a vector of n_B sample-specific read depths. It it used as an offset term in the
+regression model. Alternatively, it can be 1, NA or NULL so that we don't have an offset term
+in the model, and log(read_depth) can be included as one of the cell type-independent variables.}
 
 \item{cellular_proportions}{a matrix of n_B x H of cellular proportions.}
 
@@ -24,11 +27,21 @@ fit_model(cell_type_specific_variables, other_variables, read_depth,
 \item{init}{a numeric vector of (K + H x M + 1) corresponding to the initial value of
 c(beta, gamma, overdispersion). Can be NULL.}
 
-\item{fix_overdispersion}{logical. If \code{TRUE}, the overdispersion parameter will not be updated.}
+\item{fix_overdispersion}{logical (or numerical for a fixed overdispersion). 
+If \code{FALSE} (default), the overdispersion parameter will be estimated within the function.
+Otherwise, the overdispersion parameter can be}
 
-\item{number_of_resample}{numeric.}
+\item{number_of_resample}{numeric. The number of initial values we use in optimization. 
+The optimization algorithm generally is not sensitive to initial values, so we advise to leave it
+as the default value 1.}
 
-\item{is_active}{A logical vector of length (K + H x M), recording which predictors are included in the model.}
+\item{use_log_scale_algorithm}{logical. The default is FALSE, where the cell type-specific effects are
+fitted on a non-log scale and non-negative least squares is used (implemented in bvls).
+This is generally advisable than fitting them on a log scale, especially when the cell type-specific
+variables are binary (for example group indicators).}
+
+\item{verbose}{logical. If \code{TRUE} (default), debugging information of negative log-likelihood of each
+iteration will be printed, grouped by each backtracking line search.}
 }
 \description{
 \code{fit_model} fits a negative binomial distribution 
@@ -39,10 +52,10 @@ adjusted profile log-likelihood.
 \examples{
 library(CARseq)
 set.seed(1234)
-H = 4
-n_B = 60
-K = 1
-M = 3
+H = 4      # number of cell types
+n_B = 60   # total number of subjects
+K = 1      # number of cell type-independent covariates
+M = 3      # number of cell type-specific covariates
 cell_type_specific_variables = array(0, dim=c(n_B, H, M))
 cell_type_specific_variables[1:(n_B/3), , 1] = 1
 cell_type_specific_variables[(n_B/3+1):(n_B*2/3), , 2] = 1
@@ -52,7 +65,6 @@ read_depth = round(runif(n_B, min = 50, max = 100))
 cellular_proportions = matrix(runif(n_B * H), nrow = n_B, ncol = H)
 cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 counts = round(runif(n_B, min = 100, max = 200))
-is_active = rep(TRUE, K + H*M)
-res = fit_model_wls(init = NULL, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts, is_active)
+res = fit_model(cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
 str(res)
 }
