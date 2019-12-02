@@ -4,8 +4,14 @@
 \alias{grad_negloglik}
 \title{Gradient of negative log-likelihood of a negative binomial model}
 \usage{
-grad_negloglik(coefs, cell_type_specific_variables, other_variables,
-  read_depth, cellular_proportions, counts)
+grad_negloglik(
+  coefs,
+  cell_type_specific_variables,
+  other_variables,
+  read_depth,
+  cellular_proportions,
+  counts
+)
 }
 \arguments{
 \item{coefs}{a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,

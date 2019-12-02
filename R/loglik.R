@@ -438,9 +438,14 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   weights = overdispersion_theta / (mu * (mu+overdispersion_theta))
   adjusted_design_matrix = cbind(other_variables * mu,
                                  matrix(cell_type_specific_variables, nrow=n_B) * as.numeric(mu_matrix))
-  # sometimes a column is all 0.
-  # need to remove them from active covariates to ensure tXWX is invertible.
-  is_active = is_active & !apply(adjusted_design_matrix, 2, function(x) isTRUE(all.equal(sum(abs(x)), 0)))
+  # Sometimes a column is all 0;
+  # sometimes parameters are at the boundary.
+  # Need to remove them from active covariates to ensure tXWX is invertible.
+  is_active = is_active &
+    !apply(adjusted_design_matrix, 2, function(x) isTRUE(all.equal(sum(abs(x)), 0))) &
+    ((coefs[-length(coefs)] - log_lower)^2 >= .Machine$double.eps) &
+    ((coefs[-length(coefs)] - log_upper)^2 >= .Machine$double.eps)
+    
   tXWX = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
   SEE = sqrt(diag(solve(tXWX)))
   
@@ -465,7 +470,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
     dimnames(cell_type_specific_variables)[[3]] = paste0("variable", seq_len(M))
   }
   colnames_other_variables = NULL
-  if (!is.null(other_variables)) {
+  if (!is.null(other_variables) && ncol(other_variables) > 0) {
     if (is.null(colnames(other_variables))) {
       colnames_other_variables = paste("other_variables", seq_len(K))
     } else {

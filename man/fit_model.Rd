@@ -6,10 +6,18 @@
 using iteratively weighted least squares / non-negative least squares
 with backtracking line search.}
 \usage{
-fit_model(cell_type_specific_variables, other_variables, read_depth,
-  cellular_proportions, counts, init = NULL,
-  fix_overdispersion = FALSE, number_of_resample = 1,
-  use_log_scale_algorithm = FALSE, verbose = TRUE)
+fit_model(
+  cell_type_specific_variables,
+  other_variables,
+  read_depth,
+  cellular_proportions,
+  counts,
+  init = NULL,
+  fix_overdispersion = FALSE,
+  number_of_resample = 1,
+  use_log_scale_algorithm = FALSE,
+  verbose = TRUE
+)
 }
 \arguments{
 \item{cell_type_specific_variables}{an array of n_B x H x K of cell type-independent variables.}
