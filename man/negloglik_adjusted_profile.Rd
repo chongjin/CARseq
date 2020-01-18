@@ -4,18 +4,10 @@
 \alias{negloglik_adjusted_profile}
 \title{negative adjusted profile log-likelihood function of a CARseq negative binomial model}
 \usage{
-negloglik_adjusted_profile(
-  logtheta,
-  mu_matrix,
-  coefs,
-  cell_type_specific_variables,
-  other_variables,
-  read_depth,
-  cellular_proportions,
-  counts,
-  is_active = NULL,
-  use_log_scale_params = FALSE
-)
+negloglik_adjusted_profile(logtheta, mu_matrix, coefs,
+  cell_type_specific_variables, other_variables, read_depth,
+  cellular_proportions, counts, is_active = NULL,
+  use_log_scale_params = FALSE)
 }
 \arguments{
 \item{logtheta}{log(overdispersion) as a scalar. Overdispersion is parametrized as \code{theta} in \link[MASS]{glm.nb}.}

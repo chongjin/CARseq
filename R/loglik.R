@@ -104,8 +104,8 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   is_active = c(rep(TRUE, K), !is_reduced)
   
   # Upper limit and lower limit on entries on log scale
-  log_lower = -10
-  log_upper = 25  # some gene expression are extremely high
+  log_lower = -30
+  log_upper = 30  # some gene expression are extremely high
   # Upper limit and lower limit on entries of gamma
   if (use_log_scale_algorithm) {
     gamma_lower = log_lower
@@ -114,8 +114,8 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
     gamma_lower = exp(log_lower)
     gamma_upper = exp(log_upper)
   }
-  combined_lower = c(rep(log_lower, K), rep(gamma_lower, sum(is_active) - K))
-  combined_upper = c(rep(log_upper, K), rep(gamma_upper, sum(is_active) - K))
+  combined_lower = c(rep(-exp(log_upper), K), rep(gamma_lower, sum(is_active) - K))
+  combined_upper = c(rep(exp(log_upper), K), rep(gamma_upper, sum(is_active) - K))
   
   # We need to sample many times to decide on an initial value.
   if (is.null(number_of_resample) || is.na(number_of_resample)) number_of_resample = 20

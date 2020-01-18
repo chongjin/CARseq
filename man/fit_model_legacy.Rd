@@ -4,17 +4,10 @@
 \alias{fit_model_legacy}
 \title{fit a CARseq negative binomial model}
 \usage{
-fit_model_legacy(
-  init = NULL,
-  cell_type_specific_variables,
-  other_variables,
-  read_depth,
-  cellular_proportions,
-  counts,
-  is_active = NULL,
-  fix_overdispersion = FALSE,
-  number_of_resample = 20
-)
+fit_model_legacy(init = NULL, cell_type_specific_variables,
+  other_variables, read_depth, cellular_proportions, counts,
+  is_active = NULL, fix_overdispersion = FALSE,
+  number_of_resample = 20)
 }
 \arguments{
 \item{init}{a numeric vector of (K + H x M + 1) corresponding to the initial value of
