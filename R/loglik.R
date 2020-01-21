@@ -492,7 +492,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
     # z value
     lfc_matrix[, 3] = lfc_matrix[, 1] / lfc_matrix[, 2]
     # Pr(>|z|)
-    lfc_matrix[, 4] = pmin(1, 2 * pnorm(lfc_matrix[, 3]))
+    lfc_matrix[, 4] = pmin(1, 2 * pnorm(-abs(lfc_matrix[, 3])))
   }
   
   # Calculate Cook's distance
