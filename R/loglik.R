@@ -312,7 +312,8 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
                                   use_log_scale_params = use_log_scale_algorithm,
                                   verbose = FALSE)
 
-          if (verbose) print(negloglik_new)
+          if (verbose) message(sprintf("Negative log-likelihood = %.4f at iteration %d",
+                                       negloglik_new, inner_iter))
           if (!is.finite(negloglik_new)) {
             negloglik_new = Inf
             break
@@ -447,7 +448,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
     ((coefs[-length(coefs)] - log_upper)^2 >= .Machine$double.eps)
     
   tXWX = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
-  SEE = sqrt(diag(solve(tXWX)))
+  # SEE = sqrt(diag(solve(tXWX)))
   
   # build the matrix of coefficients
   coef_matrix = matrix(NA, nrow=length(coefs), ncol=2)
@@ -461,6 +462,38 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   # The standard error of coeffcients at the boundary at set to NAs:
   coef_matrix[coef_matrix[, 1] == log_upper | coef_matrix[, 1] == log_lower, 2] = NA
   
+  # build lfc matrix & z values
+  lfc_matrix = NULL
+  # calculate logFoldChange and lfcSE
+  if (M >= 2) {
+    lfc_matrix = matrix(NA, nrow=(M-1)*H, ncol=4)
+    colnames(lfc_matrix) = c("Estimate", "Std. Error", "z value", "Pr(>|z|)")
+    # assume we use group 1 of 1..M as the baseline:
+    is_active_as_matrix = matrix(is_active[-seq_len(K)], nrow=H)
+    add_NA_status = function(x, NA_status) {x[NA_status] = NA; x}
+    for (m in 2:M) {
+      NA_status = !(is_active_as_matrix[, m] & is_active_as_matrix[, 1])
+      lfc_matrix_current_rows = (H * (m-2) + 1):(H * (m-1))
+      lfc_matrix[lfc_matrix_current_rows, 1] = add_NA_status(
+          coef_matrix[(K + H * (m-1) + 1):(K + H * m), 1] - coef_matrix[(K + 1):(K + H), 1],
+          NA_status)
+      # contrast matrix
+      R = matrix(0, nrow = H, ncol = K + H * M)
+      for (h in seq_len(H)) {
+        R[h, c(K + H * (m-1) + h, K + h)] = c(1, -1)
+      }
+      R = R[, is_active , drop=FALSE]
+      # equivalent to sqrt(diag(R %*% solve(tXWX) %*% t(R)))
+      lfc_matrix[lfc_matrix_current_rows, 2] = add_NA_status(
+          sqrt(diag(R %*% solve(tXWX, t(R)))),
+          NA_status)
+    }
+    # z value
+    lfc_matrix[, 3] = lfc_matrix[, 1] / lfc_matrix[, 2]
+    # Pr(>|z|)
+    lfc_matrix[, 4] = min(1, 2 * pnorm(lfc_matrix[, 3]))
+  }
+  
   # Add human friendly names to coefficients
   # dimnames(cell_type_specific_variables)[[1]] = NULL
   if (is.null(dimnames(cell_type_specific_variables)[[2]])) {
@@ -472,7 +505,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   colnames_other_variables = NULL
   if (!is.null(other_variables) && ncol(other_variables) > 0) {
     if (is.null(colnames(other_variables))) {
-      colnames_other_variables = paste("other_variables", seq_len(K))
+      colnames_other_variables = paste0("other_variables", seq_len(K))
     } else {
       colnames_other_variables = colnames(other_variables)
     }
@@ -484,9 +517,17 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
         paste(rep(dimnames(cell_type_specific_variables)[[3]], each=H),
               dimnames(cell_type_specific_variables)[[2]],
               sep=":"))
+  if (M >= 2) {
+    rownames(lfc_matrix) = 
+        sprintf("%s_vs_%s:%s",
+                rep(dimnames(cell_type_specific_variables)[[3]][-1], each=H),
+                dimnames(cell_type_specific_variables)[[3]][1],
+                dimnames(cell_type_specific_variables)[[2]])
+  }
   
   # return a list of coefficients and negative log-likelihood
-  list(coefficients = coef_matrix, 
+  list(coefficients = coef_matrix,
+       lfc = lfc_matrix,
        value = as.numeric(objective)
        # ,
        # cell.type.specific.fitted.values = attr(objective, "cell.type.specific.fitted.values"),
