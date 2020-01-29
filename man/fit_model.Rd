@@ -7,9 +7,10 @@ using iteratively weighted least squares / non-negative least squares
 with backtracking line search.}
 \usage{
 fit_model(cell_type_specific_variables, other_variables, read_depth,
-  cellular_proportions, counts, init = NULL,
+  cellular_proportions, counts, verbose = TRUE, init = NULL,
   fix_overdispersion = FALSE, number_of_resample = 1,
-  use_log_scale_algorithm = FALSE, verbose = TRUE)
+  use_log_scale_algorithm = FALSE, lambda = 0,
+  return_coefficients_only = FALSE)
 }
 \arguments{
 \item{cell_type_specific_variables}{an array of n_B x H x K of cell type-independent variables.}
@@ -24,24 +25,30 @@ in the model, and log(read_depth) can be included as one of the cell type-indepe
 
 \item{counts}{A vector of n_B total read counts observed.}
 
-\item{init}{a numeric vector of (K + H x M + 1) corresponding to the initial value of
+\item{verbose}{logical. If \code{TRUE} (default), display information of negative log-likelihood of each iteration.}
+
+\item{init}{("expert" argument) a numeric vector of (K + H x M + 1) corresponding to the initial value of
 c(beta, gamma, overdispersion). Can be NULL.}
 
-\item{fix_overdispersion}{logical (or numerical for a fixed overdispersion). 
+\item{fix_overdispersion}{("expert" argument) logical (or numerical for a fixed overdispersion). 
 If \code{FALSE} (default), the overdispersion parameter will be estimated within the function.
 Otherwise, the overdispersion parameter can be}
 
-\item{number_of_resample}{numeric. The number of initial values we use in optimization. 
+\item{number_of_resample}{("expert" argument) numeric. The number of initial values we use in optimization. 
 The optimization algorithm generally is not sensitive to initial values, so we advise to leave it
 as the default value 1.}
 
-\item{use_log_scale_algorithm}{logical. The default is FALSE, where the cell type-specific effects are
+\item{use_log_scale_algorithm}{("expert" argument) logical. The default is FALSE, where the cell type-specific effects are
 fitted on a non-log scale and non-negative least squares is used (implemented in bvls).
 This is generally advisable than fitting them on a log scale, especially when the cell type-specific
 variables are binary (for example group indicators).}
 
-\item{verbose}{logical. If \code{TRUE} (default), debugging information of negative log-likelihood of each
-iteration will be printed, grouped by each backtracking line search.}
+\item{lambda}{("expert" argument) numerical. \eqn{\sigma^2} in Gaussian prior. Only takes effect when 
+\code{use_log_scale_algorithm} is \code{TRUE}.}
+
+\item{return_coefficients_only}{("expert" argument) logical. If \code{FALSE} (default), lfc, log-likelihood,
+Cook's distance and fitted values 
+will be provided together with coefficient estimates. Otherwise, only coefficient estimates are returned.}
 }
 \description{
 \code{fit_model} fits a negative binomial distribution 
