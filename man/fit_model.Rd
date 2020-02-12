@@ -43,8 +43,9 @@ fitted on a non-log scale and non-negative least squares is used (implemented in
 This is generally advisable than fitting them on a log scale, especially when the cell type-specific
 variables are binary (for example group indicators).}
 
-\item{lambda}{("expert" argument) numerical. \eqn{\sigma^2} in Gaussian prior. Only takes effect when 
-\code{use_log_scale_algorithm} is \code{TRUE}.}
+\item{lambda}{("expert" argument) numerical. \eqn{1/\sigma^2} in Gaussian prior. Only takes effect when 
+\code{use_log_scale_algorithm} is \code{TRUE}. Defaults to 0. It can also be a vector of length 
+\eqn{K + H * (M + 1)}.}
 
 \item{return_coefficients_only}{("expert" argument) logical. If \code{FALSE} (default), lfc, log-likelihood,
 Cook's distance and fitted values 

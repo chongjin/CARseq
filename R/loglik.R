@@ -47,8 +47,9 @@ NULL
 #'        fitted on a non-log scale and non-negative least squares is used (implemented in bvls).
 #'        This is generally advisable than fitting them on a log scale, especially when the cell type-specific
 #'        variables are binary (for example group indicators).
-#' @param lambda ("expert" argument) numerical. \eqn{\sigma^2} in Gaussian prior. Only takes effect when 
-#'        \code{use_log_scale_algorithm} is \code{TRUE}. Defaults to 0.
+#' @param lambda ("expert" argument) numerical. \eqn{1/\sigma^2} in Gaussian prior. Only takes effect when 
+#'        \code{use_log_scale_algorithm} is \code{TRUE}. Defaults to 0. It can also be a vector of length 
+#'        \eqn{K + H * (M + 1)}.
 #' @param return_coefficients_only ("expert" argument) logical. If \code{FALSE} (default), lfc, log-likelihood,
 #'        Cook's distance and fitted values 
 #'        will be provided together with coefficient estimates. Otherwise, only coefficient estimates are returned.
@@ -113,6 +114,9 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   is_reduced = apply(cell_type_specific_variables, c(2,3),
                      function(y) identical(y, rep(0, dim(cell_type_specific_variables)[1])))
   is_active = c(rep(TRUE, K), !is_reduced)
+  if (!all(is_active) && use_log_scale_algorithm && sum(lambda) > 0) {
+    stop("Cannot add prior to a parameters in a reduced model. For Wald test, please fit the full model only. For LR test, please set prior to 0.")
+  }
   
   # Upper limit and lower limit on entries on log scale
   log_lower = -30
@@ -139,13 +143,19 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   
   # Ridge regression penalty
   # lambda_vector = rep(lambda, K + H * M)
-  lambda_vector = c(rep(0, K), rep(lambda, H * M))
-  for (h in seq_len(H)) {
-    for (m in seq_len(M)) {
-      if (all(1 == cell_type_specific_variables[ , h, m])) {
-        lambda_vector[K + H * (m-1) + h] = lambda^2   # a less informative prior for cell type-specific expression
+  if (length(lambda) == 1) {
+    lambda_vector = c(rep(0, K), rep(lambda, H * M))
+    for (h in seq_len(H)) {
+      for (m in seq_len(M)) {
+        if (all(1 == cell_type_specific_variables[ , h, m])) {
+          lambda_vector[K + H * (m-1) + h] = lambda^2   # a less informative prior for cell type-specific expression
+        }
       }
     }
+    lambda_vector_expanded = c(lambda_vector, rep(lambda^2, H))
+  } else {
+    lambda_vector_expanded = lambda
+    lambda_vector = lambda[seq_len(K + H * M)]
   }
   
   if (is.numeric(fix_overdispersion)) {
@@ -155,307 +165,332 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
     overdispersion_theta = coefs[length(coefs)]
   }
   
-  negloglik_all_time_best = NULL
-  coefs_all_time_best = NULL
-  number_of_successful_iter = 0
-  
-  # Need to generate multiple initial values. 
-  # If we have initial value, we need to use it first.
-  negloglik_curr_vector = rep(NA, number_of_resample_max)  # stores a vector of likelihood for debugging purposes
-  for (iter in seq_len(number_of_resample_max)) {
-    resample_size = resample_size_list[iter]
-    
-    # save the current likelihood for each optimization path with a new initial value
-    negloglik_curr_vector[iter] = tryCatch({
-      
-      # Generate initial value through glm model.
-      # In very few cases, the overdispersion parameter will be extremely large, and we need to do the sampling again
-      # to regenerate initial values.
-      max_init_iter = 10
-      for (init_iter in 1:max_init_iter) {
-      
-        # sample from a matrix of cell type-specific covariates 
-        array_inds_sampled_cell_type_specific = as.matrix(merge(cbind(1:n_B, sample(x = 1:H, size = n_B, replace = TRUE)), seq_len(M), by=NULL))
-        variables_sampled_cell_type_specific = matrix(cell_type_specific_variables[array_inds_sampled_cell_type_specific], nrow=n_B, ncol=M)
-        
-        # Do we already have an overdispersion parameter yet?
-        if (iter == 1 & (!fix_overdispersion)) {
-          # Are there cell type-dependent variables?
-          if (K == 0) {
-            nbmodel = MASS::glm.nb(counts~offset(log(read_depth)) + 0 + variables_sampled_cell_type_specific,
-                                   subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))))
-          } else {
-            nbmodel = MASS::glm.nb(counts~offset(log(read_depth)) + 0 + other_variables + variables_sampled_cell_type_specific, 
-                                   subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))))
-          }
-          overdispersion_theta = nbmodel$theta
-        } else {
-          if (K == 0) {
-            nbmodel = stats::glm(counts~offset(log(read_depth)) + 0 + variables_sampled_cell_type_specific,
-                                   subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))),
-                          family = negative.binomial(overdispersion_theta))
-          } else {
-            nbmodel = stats::glm(counts~offset(log(read_depth)) + 0 + other_variables + variables_sampled_cell_type_specific, 
-                                   subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))),
-                          family = negative.binomial(overdispersion_theta))
-          }
-        }
-        
-        if (overdispersion_theta < exp(10)) break
-        if (init_iter == max_init_iter) stop("Cannot find a suitable initial value!")
-      }
-  
-      # construct initial parameters
-      if (is.null(init)) {
-        # initialize using MASS::glm.nb
-        if (use_log_scale_algorithm) {
-          coefs = c(nbmodel$coefficients[seq_len(K)],                 # cell type-independent variables
-                    rep(nbmodel$coefficients[seq_len(M) + K], each=H),   # cell type-specific variables
-                    overdispersion = overdispersion_theta)
-        } else {
-          coefs = c(nbmodel$coefficients[seq_len(K)],                 # cell type-independent variables
-                    rep(exp(nbmodel$coefficients[seq_len(M) + K]), each=H),   # cell type-specific variables
-                    overdispersion = overdispersion_theta)
-        }  
-        coefs[is.na(coefs)] = 0
-      } else if (length(coefs) != K + H * M + 1) {
-        stop("The length of coefs is not equal to K + H * M + 1")
-      } else if (!use_log_scale_algorithm) {
-        # We need to take exp to make gamma in non-log scale within "coefs"
-        coefs[seq_len(H * M) + K] = exp(coefs[seq_len(H * M) + K])
-      }
-      
-      # TODO: use cooks.distance() and fitted() to process the outliers
-      # https://stats.stackexchange.com/questions/11632/what-kind-of-residuals-and-cooks-distance-are-used-for-glm
-      # At the current development stage, we did not calculate cooks distance from our fitted model.
-      # Instead, we fitted a glm model to replace the outliers outside the function.
-      
-      # Convergence conditions of Iteratively Weighted Least Squares
-      epsilon_convergence = 1e-6
-      maxiter = 50
-      # The negative log-likelihood needs to decrease each iteration of the loop.
-      # Break the loop if it does not decrease a lot, or it increases:
-      inner_iter = 0
-      negloglik_prev = negloglik_curr = negloglik_best = Inf
+  iter_overdispersion_update = 0
+  overdispersion_has_converged = FALSE
+  # we will alternate between updating mean model parameters and overdispersion parameter:
+  # while (!overdispersion_has_converged) {
 
-      while (inner_iter == 0 ||
-             (negloglik_prev - negloglik_curr > epsilon_convergence
-              &&
-              inner_iter < maxiter)) {
+    overdispersion_has_converged = TRUE  # it will be flipped to FALSE if later we detect no convergence
+    negloglik_all_time_best = NULL
+    coefs_all_time_best = NULL
+    number_of_successful_iter = 0
+    
+    # Need to generate multiple initial values. 
+    # If we have initial value, we need to use it first.
+    negloglik_curr_vector = rep(NA, number_of_resample_max)  # stores a vector of likelihood for debugging purposes
+    for (iter in seq_len(number_of_resample_max)) {
+      resample_size = resample_size_list[iter]
+      
+      # save the current likelihood for each optimization path with a new initial value
+      negloglik_curr_vector[iter] = tryCatch({
         
-        # split coefs into beta (cell type-independent) and gamma (cell type-specific)
-        beta = coefs[seq_len(K)]
-        gamma = matrix(coefs[seq_len(H * M) + K], nrow = H, ncol = M)
-        covariate_adjusted_read_depth = exp(other_variables %*% matrix(beta, ncol=1, nrow=K)) * read_depth  # n_B x 1
-        mu_matrix = matrix(NA, n_B, H)
-        for (i in seq_len(n_B)) {
-          # read depth, other effects, cell type-specific effects
+        # Generate initial value through glm model.
+        # In very few cases, the overdispersion parameter will be extremely large, and we need to do the sampling again
+        # to regenerate initial values.
+        max_init_iter = 10
+        for (init_iter in 1:max_init_iter) {
+        
+          # sample from a matrix of cell type-specific covariates 
+          array_inds_sampled_cell_type_specific = as.matrix(merge(cbind(1:n_B, sample(x = 1:H, size = n_B, replace = TRUE)), seq_len(M), by=NULL))
+          variables_sampled_cell_type_specific = matrix(cell_type_specific_variables[array_inds_sampled_cell_type_specific], nrow=n_B, ncol=M)
+          
+          # Do we already have an overdispersion parameter yet?
+          if (iter == 1 & (!fix_overdispersion)) {
+            # Are there cell type-dependent variables?
+            if (K == 0) {
+              nbmodel = MASS::glm.nb(counts~offset(log(read_depth)) + 0 + variables_sampled_cell_type_specific,
+                                     subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))))
+            } else {
+              nbmodel = MASS::glm.nb(counts~offset(log(read_depth)) + 0 + other_variables + variables_sampled_cell_type_specific, 
+                                     subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))))
+            }
+            overdispersion_theta = nbmodel$theta
+          } else {
+            if (K == 0) {
+              nbmodel = stats::glm(counts~offset(log(read_depth)) + 0 + variables_sampled_cell_type_specific,
+                                     subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))),
+                            family = MASS::negative.binomial(overdispersion_theta))
+            } else {
+              nbmodel = stats::glm(counts~offset(log(read_depth)) + 0 + other_variables + variables_sampled_cell_type_specific, 
+                                     subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))),
+                            family = MASS::negative.binomial(overdispersion_theta))
+            }
+          }
+          
+          if (overdispersion_theta < exp(10)) break
+          if (init_iter == max_init_iter) stop("Cannot find a suitable initial value!")
+        }
+    
+        # construct initial parameters
+        if (is.null(init)) {
+          # initialize using MASS::glm.nb
           if (use_log_scale_algorithm) {
-            mu_matrix[i, ] = cellular_proportions[i, ] * exp(rowSums(gamma * cell_type_specific_variables[i, , ]))
+            coefs = c(nbmodel$coefficients[seq_len(K)],                 # cell type-independent variables
+                      rep(nbmodel$coefficients[seq_len(M) + K], each=H),   # cell type-specific variables
+                      overdispersion = overdispersion_theta)
           } else {
-            mu_matrix[i, ] = cellular_proportions[i, ] * matrixStats::rowProds(gamma ^ cell_type_specific_variables[i, , ])
+            coefs = c(nbmodel$coefficients[seq_len(K)],                 # cell type-independent variables
+                      rep(exp(nbmodel$coefficients[seq_len(M) + K]), each=H),   # cell type-specific variables
+                      overdispersion = overdispersion_theta)
+          }  
+          coefs[is.na(coefs)] = 0
+        } else if (length(coefs) != K + H * M + 1) {
+          stop("The length of coefs is not equal to K + H * M + 1")
+        } else if (!use_log_scale_algorithm) {
+          # We need to take exp to make gamma in non-log scale within "coefs"
+          coefs[seq_len(H * M) + K] = exp(coefs[seq_len(H * M) + K])
+        }
+        
+        # TODO: use cooks.distance() and fitted() to process the outliers
+        # https://stats.stackexchange.com/questions/11632/what-kind-of-residuals-and-cooks-distance-are-used-for-glm
+        # At the current development stage, we did not calculate cooks distance from our fitted model.
+        # Instead, we fitted a glm model to replace the outliers outside the function.
+        
+        # Convergence conditions of Iteratively Weighted Least Squares
+        epsilon_convergence = 1e-6
+        maxiter = 50
+        # The negative log-likelihood needs to decrease each iteration of the loop.
+        # Break the loop if it does not decrease a lot, or it increases:
+        inner_iter = 0
+        negloglik_prev = negloglik_curr = negloglik_best = Inf
+  
+        while (inner_iter == 0 ||
+               (negloglik_prev - negloglik_curr > epsilon_convergence
+                &&
+                inner_iter < maxiter)) {
+          
+          # split coefs into beta (cell type-independent) and gamma (cell type-specific)
+          beta = coefs[seq_len(K)]
+          gamma = matrix(coefs[seq_len(H * M) + K], nrow = H, ncol = M)
+          covariate_adjusted_read_depth = exp(other_variables %*% matrix(beta, ncol=1, nrow=K)) * read_depth  # n_B x 1
+          mu_matrix = matrix(NA, n_B, H)
+          for (i in seq_len(n_B)) {
+            # read depth, other effects, cell type-specific effects
+            if (use_log_scale_algorithm) {
+              mu_matrix[i, ] = cellular_proportions[i, ] * exp(rowSums(gamma * cell_type_specific_variables[i, , ]))
+            } else {
+              mu_matrix[i, ] = cellular_proportions[i, ] * matrixStats::rowProds(gamma ^ cell_type_specific_variables[i, , ])
+            }
           }
-        }
-        mu_matrix = mu_matrix * as.numeric(covariate_adjusted_read_depth)
-        mu = rowSums(mu_matrix)
-        
-        # current negative log-likelihood:
-        negloglik_prev = negloglik_curr
-        negloglik_curr = - sum(lgamma(counts + overdispersion_theta) - lgamma(overdispersion_theta) - lgamma(counts + 1) +
-                                 overdispersion_theta*log(overdispersion_theta) + counts*log(mu) -
-                                 (counts + overdispersion_theta) * log(overdispersion_theta+mu)) +
-                              sum(lambda_vector * coefs[-length(coefs)]^2 * 0.5)
-                              
-        if (!is.finite(negloglik_curr)) {
-          # message("The optimization failed to converge.")
-          break
-        }
-        
-        # in weighted least squares:
-        weights = overdispersion_theta / (mu * (mu+overdispersion_theta))
-        if (use_log_scale_algorithm) {
-          adjusted_design_matrix = cbind(other_variables * mu,
-                                         matrix(cell_type_specific_variables, nrow=n_B) * as.numeric(mu_matrix))
-        } else {
-          adjusted_design_matrix = cbind(other_variables * mu,
-                                         matrix(cell_type_specific_variables, nrow=n_B) / rep(gamma, each=n_B) * as.numeric(mu_matrix))
-        }
-        
-        adjusted_response = adjusted_design_matrix %*% coefs[-length(coefs)] + (counts - mu)
-        
-        # score function
-        score_curr = crossprod(adjusted_design_matrix[, is_active], weights * (counts - mu))
-        
-        # least squares
-        if (use_log_scale_algorithm) {
-          # direction = - coefs[-length(coefs)][is_active] +
-          #   tryCatch(stats::lsfit(adjusted_design_matrix[, is_active],
-          #                         adjusted_response,
-          #                         wt = weights,
-          #                         intercept = FALSE)$coef, 
-          #                      warning = function(w) {coefs[-length(coefs)][is_active]},
-          #                      error = function(e) {coefs[-length(coefs)][is_active]})
-          # direction = - coefs[-length(coefs)][is_active] +
-          #   tryCatch(as.numeric(glmnet::glmnet(adjusted_design_matrix[, is_active],
-          #                           adjusted_response,
-          #                           weights = weights,
-          #                           alpha = 0,
-          #                           lambda = lambda,
-          #                           intercept = FALSE)$beta),
-          #            warning = function(w) {coefs[-length(coefs)][is_active]},
-          #            error = function(e) {coefs[-length(coefs)][is_active]})
-          direction = - coefs[-length(coefs)][is_active] +
-            tryCatch({
-              tXWX_lambda = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
-              diag(tXWX_lambda) = diag(tXWX_lambda) + lambda_vector[is_active]
-              L = chol(tXWX_lambda)
-              w = backsolve(L, t(adjusted_design_matrix[, is_active]) %*% (weights * adjusted_response), upper.tri = TRUE, transpose = TRUE)
-              forwardsolve(L, w, upper.tri = TRUE, transpose = FALSE)
-            },
-            warning = function(w) {coefs[-length(coefs)][is_active]},
-            error = function(e) {coefs[-length(coefs)][is_active]})
+          mu_matrix = mu_matrix * as.numeric(covariate_adjusted_read_depth)
+          mu = rowSums(mu_matrix)
           
-        } else {
-          # bounded-variable least squares ensures that the active parameters in H*M cell type-specific ones are bounded
-          direction = - coefs[-length(coefs)][is_active] +
-            bvls::bvls(adjusted_design_matrix[, is_active] * sqrt(weights),
-                       adjusted_response * sqrt(weights),
-                       bl = combined_lower,
-                       bu = combined_upper)$x
-        }
-        
-        # backtracking line search (halving)
-        c1 = 1e-4
-        contraction = 0.5
-        step_length = 1
-        
-        max_backtracking_iter = 10
-        for (backtracking_iter in 1:max_backtracking_iter) {
-          coefs_new = coefs
-          coefs_new[-length(coefs_new)][is_active] = coefs[-length(coefs)][is_active] + step_length * direction
+          # current negative log-likelihood:
+          negloglik_prev = negloglik_curr
+          negloglik_curr = - sum(lgamma(counts + overdispersion_theta) - lgamma(overdispersion_theta) - lgamma(counts + 1) +
+                                   overdispersion_theta*log(overdispersion_theta) + counts*log(mu) -
+                                   (counts + overdispersion_theta) * log(overdispersion_theta+mu)) +
+                                sum(lambda_vector * coefs[-length(coefs)]^2 * 0.5)
+                                
+          if (!is.finite(negloglik_curr)) {
+            message("The optimization failed to converge.")
+            break
+          }
           
-          # if the parameters are already out of the boundary, we half the step size until we are back inside the boundary:
-          step_iter = 1
-          max_step_iter = 20
-          while (backtracking_iter == 1 &&
-                 (any(combined_upper < coefs_new[-length(coefs_new)][is_active]) ||
-                  any(combined_lower > coefs_new[-length(coefs_new)][is_active])) &&
-                 step_iter < max_step_iter) {
-            step_length = step_length * contraction
+          # in weighted least squares:
+          weights = overdispersion_theta / (mu * (mu+overdispersion_theta))
+          if (use_log_scale_algorithm) {
+            adjusted_design_matrix = cbind(other_variables * mu,
+                                           matrix(cell_type_specific_variables, nrow=n_B) * as.numeric(mu_matrix))
+          } else {
+            adjusted_design_matrix = cbind(other_variables * mu,
+                                           matrix(cell_type_specific_variables, nrow=n_B) / rep(gamma, each=n_B) * as.numeric(mu_matrix))
+          }
+          
+          adjusted_response = adjusted_design_matrix %*% coefs[-length(coefs)] + (counts - mu)
+          
+          # score function
+          score_curr = crossprod(adjusted_design_matrix[, is_active], weights * (counts - mu))
+          
+          # least squares
+          if (use_log_scale_algorithm) {
+            # direction = - coefs[-length(coefs)][is_active] +
+            #   tryCatch(stats::lsfit(adjusted_design_matrix[, is_active],
+            #                         adjusted_response,
+            #                         wt = weights,
+            #                         intercept = FALSE)$coef, 
+            #                      warning = function(w) {coefs[-length(coefs)][is_active]},
+            #                      error = function(e) {coefs[-length(coefs)][is_active]})
+            # direction = - coefs[-length(coefs)][is_active] +
+            #   tryCatch(as.numeric(glmnet::glmnet(adjusted_design_matrix[, is_active],
+            #                           adjusted_response,
+            #                           weights = weights,
+            #                           alpha = 0,
+            #                           lambda = lambda,
+            #                           intercept = FALSE)$beta),
+            #            warning = function(w) {coefs[-length(coefs)][is_active]},
+            #            error = function(e) {coefs[-length(coefs)][is_active]})
+            direction = - coefs[-length(coefs)][is_active] +
+              tryCatch({
+                tXWX_lambda = crossprod(adjusted_design_matrix[, is_active], weights * adjusted_design_matrix[, is_active])
+                diag(tXWX_lambda) = diag(tXWX_lambda) + lambda_vector[is_active]
+                L = chol(tXWX_lambda)
+                w = backsolve(L, t(adjusted_design_matrix[, is_active]) %*% (weights * adjusted_response), upper.tri = TRUE, transpose = TRUE)
+                forwardsolve(L, w, upper.tri = TRUE, transpose = FALSE)
+              },
+              warning = function(w) {coefs[-length(coefs)][is_active]},
+              error = function(e) {coefs[-length(coefs)][is_active]})
+            
+          } else {
+            # bounded-variable least squares ensures that the active parameters in H*M cell type-specific ones are bounded
+            direction = - coefs[-length(coefs)][is_active] +
+              bvls::bvls(adjusted_design_matrix[, is_active] * sqrt(weights),
+                         adjusted_response * sqrt(weights),
+                         bl = combined_lower,
+                         bu = combined_upper)$x
+          }
+          
+          # backtracking line search (halving)
+          c1 = 1e-4
+          contraction = 0.5
+          step_length = 1
+          
+          max_backtracking_iter = 10
+          for (backtracking_iter in 1:max_backtracking_iter) {
+            coefs_new = coefs
             coefs_new[-length(coefs_new)][is_active] = coefs[-length(coefs)][is_active] + step_length * direction
-            step_iter = step_iter + 1
+            
+            # if the parameters are already out of the boundary, we half the step size until we are back inside the boundary:
+            step_iter = 1
+            max_step_iter = 20
+            while (backtracking_iter == 1 &&
+                   (any(combined_upper < coefs_new[-length(coefs_new)][is_active]) ||
+                    any(combined_lower > coefs_new[-length(coefs_new)][is_active])) &&
+                   step_iter < max_step_iter) {
+              step_length = step_length * contraction
+              coefs_new[-length(coefs_new)][is_active] = coefs[-length(coefs)][is_active] + step_length * direction
+              step_iter = step_iter + 1
+            }
+            
+            # Calculate the log-likelihood at the intended coefs_new:
+            negloglik_new = negloglik(coefs = coefs_new,
+                                    cell_type_specific_variables = cell_type_specific_variables,
+                                    other_variables = other_variables,
+                                    read_depth = read_depth,
+                                    cellular_proportions = cellular_proportions,
+                                    counts = counts,
+                                    use_log_scale_params = use_log_scale_algorithm,
+                                    verbose = FALSE) +
+                            sum(lambda_vector * coefs_new[-length(coefs_new)]^2 * 0.5)
+  
+            if (verbose) message(sprintf("Negative log-likelihood = %.4f at iteration %d.%d",
+                                         negloglik_new, inner_iter, backtracking_iter))
+            if (!is.finite(negloglik_new)) {
+              negloglik_new = Inf
+              break
+            }
+            if (negloglik_new <= negloglik_curr + c1 * step_length * crossprod(-score_curr, direction))
+              break
+            step_length = step_length * contraction
+          }
+          if (verbose) cat("\n")
+          coefs = coefs_new
+          negloglik_curr = negloglik_new
+          
+          # save the best coefs and negative log-likelihood
+          if (is.null(negloglik_best) || negloglik_curr < negloglik_best) {
+            coefs_best = coefs
+            negloglik_best = negloglik_curr
+          }
+          if (is.null(negloglik_all_time_best) || negloglik_curr < negloglik_all_time_best) {
+            coefs_all_time_best = coefs
+            negloglik_all_time_best = negloglik_curr
           }
           
-          # Calculate the log-likelihood at the intended coefs_new:
-          negloglik_new = negloglik(coefs = coefs_new,
-                                  cell_type_specific_variables = cell_type_specific_variables,
-                                  other_variables = other_variables,
-                                  read_depth = read_depth,
-                                  cellular_proportions = cellular_proportions,
-                                  counts = counts,
-                                  use_log_scale_params = use_log_scale_algorithm,
-                                  verbose = FALSE) +
-                          sum(lambda_vector * coefs_new[-length(coefs_new)]^2 * 0.5)
-
-          if (verbose) message(sprintf("Negative log-likelihood = %.4f at iteration %d.%d",
-                                       negloglik_new, inner_iter, backtracking_iter))
-          if (!is.finite(negloglik_new)) {
-            negloglik_new = Inf
-            break
-          }
-          if (negloglik_new <= negloglik_curr + c1 * step_length * crossprod(-score_curr, direction))
-            break
-          step_length = step_length * contraction
-        }
-        if (verbose) cat("\n")
-        coefs = coefs_new
-        negloglik_curr = negloglik_new
-        
-        # save the best coefs and negative log-likelihood
-        if (is.null(negloglik_best) || negloglik_curr < negloglik_best) {
-          coefs_best = coefs
-          negloglik_best = negloglik_curr
-        }
-        if (is.null(negloglik_all_time_best) || negloglik_curr < negloglik_all_time_best) {
-          coefs_all_time_best = coefs
-          negloglik_all_time_best = negloglik_curr
+          if (!is.finite(negloglik_curr)) next
+          
+          # Least squares can be fitted directly using QR decomposition
+          # See https://math.stackexchange.com/questions/852327/efficient-algorithm-for-iteratively-reweighted-least-squares-problem
+          # See https://doi.org/10.1093/nar/gks042: 
+          #     "logdet is the sum of the logarithms of the diagonal elements of the Cholesky factor R."
+          # qr_result = qr(sqrt(weights) * adjusted_design_matrix[, is_active])
+          # coefs[-length(coefs)][is_active] = backsolve(qr.R(qr_result),
+          #                                              crossprod(qr.Q(qr_result), sqrt(weights) * adjusted_response))
+          
+          inner_iter = inner_iter + 1
+          
         }
         
-        if (!is.finite(negloglik_curr)) next
+        # throw a warning of maxiter reached
+        if (inner_iter == maxiter) {
+          message(paste("Max number of iterations", maxiter, "has been reached."))
+        }
         
-        # Least squares can be fitted directly using QR decomposition
-        # See https://math.stackexchange.com/questions/852327/efficient-algorithm-for-iteratively-reweighted-least-squares-problem
-        # See https://doi.org/10.1093/nar/gks042: 
-        #     "logdet is the sum of the logarithms of the diagonal elements of the Cholesky factor R."
-        # qr_result = qr(sqrt(weights) * adjusted_design_matrix[, is_active])
-        # coefs[-length(coefs)][is_active] = backsolve(qr.R(qr_result),
-        #                                              crossprod(qr.Q(qr_result), sqrt(weights) * adjusted_response))
+        number_of_successful_iter = number_of_successful_iter + 1
         
-        inner_iter = inner_iter + 1
+        if (number_of_successful_iter > number_of_resample) break
         
-      }
+        negloglik_best
+      # }, error = function(e) {warning(e); warning("Iteration has failed."); NA}, warning = function(w) {warning(w); NA})
+      }, error = function(e) {warning(e); warning("Iteration has failed."); NA})
       
-      # throw a warning of maxiter reached
-      if (inner_iter == maxiter) {
-        message(paste("Max number of iterations", maxiter, "has been reached."))
-      }
+      # We will generate initial values from glm next iteration:
+      init = NULL
+      if (verbose) cat("\n")
       
-      number_of_successful_iter = number_of_successful_iter + 1
+    }
+    
+    # throw error if we do not have number_of_resample successful tries:
+    # NOTE: should we add it back?
+    # if (number_of_successful_iter != number_of_resample) stop("Optimization using different initial values has failed too many times!")
+    
+    # The best solution after using multiple initial values:
+    coefs = coefs_all_time_best
+    if (!use_log_scale_algorithm) {
+      coefs[seq_len(H * M) + K] = log(coefs[seq_len(H * M) + K])
+    }
       
-      if (number_of_successful_iter > number_of_resample) break
+    # update overdispersion parameter
+    # NOTE: when adding normal prior to beta, need to use standard (not expanded) design matrix.
+    if (!fix_overdispersion) {
       
-      negloglik_best
-    # }, error = function(e) {warning(e); warning("Iteration has failed."); NA}, warning = function(w) {warning(w); NA})
-    }, error = function(e) {warning(e); warning("Iteration has failed."); NA})
-    
-    # We will generate initial values from glm next iteration:
-    init = NULL
-    if (verbose) cat("\n")
-    
-  }
-  
-  # throw error if we do not have number_of_resample successful tries:
-  # NOTE: should we add it back?
-  # if (number_of_successful_iter != number_of_resample) stop("Optimization using different initial values has failed too many times!")
-  
-  # The best solution after using multiple initial values:
-  coefs = coefs_all_time_best
-  if (!use_log_scale_algorithm) {
-    coefs[seq_len(H * M) + K] = log(coefs[seq_len(H * M) + K])
-  }
-    
-  # update overdispersion parameter
-  # TODO when adding normal prior to beta, need to use standard (not expanded) design matrix
-  if (!fix_overdispersion) {
-    
-    # calculate likelihood without updated overdispersion to retrieve mu_matrix
-    objective_old_overdispersion = negloglik(coefs = coefs,
-                                             cell_type_specific_variables = cell_type_specific_variables,
-                                             other_variables = other_variables,
-                                             read_depth = read_depth,
-                                             cellular_proportions = cellular_proportions,
-                                             counts = counts,
-                                             use_log_scale_params = TRUE,
-                                             verbose = TRUE)
-    # one dimensional optimization to obtain overdispersion parameter
-    optimize_theta = stats::optim(
-      par = log(coefs[length(coefs)]),
-      negloglik_adjusted_profile,
-      mu_matrix = attr(objective_old_overdispersion, "cell.type.specific.fitted.values"),
-      coefs = coefs,
-      cell_type_specific_variables = cell_type_specific_variables,
-      other_variables = other_variables,
-      read_depth = read_depth,
-      cellular_proportions = cellular_proportions,
-      counts = counts,
-      is_active = is_active,
-      use_log_scale_params = TRUE,
-      method = "Brent",
-      lower = log(coefs[length(coefs)]) - 1,
-      upper = log(coefs[length(coefs)]) + 1
-    )
-    coefs[length(coefs)] = exp(optimize_theta$par)
-  }
+      # calculate likelihood without updated overdispersion to retrieve mu_matrix
+      objective_old_overdispersion = negloglik(coefs = coefs,
+                                               cell_type_specific_variables = cell_type_specific_variables,
+                                               other_variables = other_variables,
+                                               read_depth = read_depth,
+                                               cellular_proportions = cellular_proportions,
+                                               counts = counts,
+                                               use_log_scale_params = TRUE,
+                                               verbose = TRUE)
+      # one dimensional optimization to obtain overdispersion parameter
+      optimize_theta = stats::optim(
+        par = log(coefs[length(coefs)]),
+        negloglik_adjusted_profile,
+        mu_matrix = attr(objective_old_overdispersion, "cell.type.specific.fitted.values"),
+        coefs = coefs,
+        cell_type_specific_variables = cell_type_specific_variables,
+        other_variables = other_variables,
+        read_depth = read_depth,
+        cellular_proportions = cellular_proportions,
+        counts = counts,
+        is_active = is_active,
+        use_log_scale_params = TRUE,
+        method = "Brent",
+        lower = -5,
+        upper = 10
+        # lower = log(coefs[length(coefs)]) - 1,
+        # upper = log(coefs[length(coefs)]) + 1
+      )
+      
+      # # When overdispersion parameter is update, we only re-fit mean regression parameters when it is a major update:
+      # if (abs(optimize_theta$par - log(coefs[length(coefs)])) > 0.1) {
+      #   # we will continue to update mean regression parameters:
+      #   overdispersion_has_converged = FALSE
+      #   iter_overdispersion_update = 1 + iter_overdispersion_update
+      #   number_of_resample_max = number_of_resample = 1
+      #   if (use_log_scale_algorithm) {
+      #     coefs[seq_len(H * M) + K] = exp(coefs[seq_len(H * M) + K])
+      #   }
+      #   init = coefs
+      # }
+      # if (iter_overdispersion_update >= 10) {
+      #   stop("Overdispersion parameter failed to converge!")
+      # }
+      
+      coefs[length(coefs)] = exp(optimize_theta$par)
+    }
+  # }
   
   # The calculation of coefficients is now complete:
   if (return_coefficients_only) {
@@ -473,8 +508,8 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
                         verbose = TRUE)
 
   # fit model using expanded matrices
-  # NOTE: This is a recursive call, and we may restructure it later:
-  if (use_log_scale_algorithm && lambda > 0) {
+  # NOTE: "fit_model" is a recursive call (executed only once since return_coefficients_only==TRUE). We might restructure it in the future:
+  if (use_log_scale_algorithm && sum(lambda) > 0) {
     
     # add cell type-specific intercepts to make the "lambda" prior symmetric on all levels
     cell_type_specific_variables_expanded = array(data = cell_type_specific_variables,
@@ -502,8 +537,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
     cell_type_specific_variables_standard = cell_type_specific_variables
     cell_type_specific_variables = cell_type_specific_variables_expanded
     M = M + 1
-    # lambda_vector = c(lambda_vector, rep(0, H))
-    lambda_vector = c(lambda_vector, rep(lambda^2, H))
+    lambda_vector = lambda_vector_expanded
   }
   
   # SEE
@@ -529,8 +563,9 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   # Sometimes a column is all 0;
   # sometimes parameters are at the boundary.
   # Need to remove them from active covariates to ensure tXWX is invertible.
-  if (use_log_scale_algorithm && lambda > 0) {
-    is_active = rep(TRUE, K + H * M) #&   # M is M + 1 here
+  if (use_log_scale_algorithm && sum(lambda) > 0) {
+    # with sufficient shrinkage, all of the parameters should be "active", i.e. not on the boundary
+    is_active = c(rep(TRUE, K), !is_reduced, rep(TRUE, H)) #&   # M is M + 1 here
       #(coefs[seq_len(K + H * M)] - log_lower >= .Machine$double.eps^0.5) &
       #(coefs[seq_len(K + H * M)] - log_upper <= -.Machine$double.eps^0.5)
   } else {
@@ -611,7 +646,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   cooks = 1/p * hat_values / (1 - hat_values) * r_Pi^2
   
   # use standard design matrix
-  if (use_log_scale_algorithm && lambda > 0) {
+  if (use_log_scale_algorithm && sum(lambda) > 0) {
     cell_type_specific_variables = cell_type_specific_variables_standard
     M = M - 1
   }
@@ -634,7 +669,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   }
   
   # Name cell type-specific effects as interaction terms
-  if (use_log_scale_algorithm && lambda > 0) {
+  if (use_log_scale_algorithm && sum(lambda) > 0) {
     rownames(coef_matrix)[-length(coefs)] = 
         c(colnames_other_variables, 
           paste(rep(c(dimnames(cell_type_specific_variables)[[3]], "intercept"), each=H),
