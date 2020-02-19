@@ -9,8 +9,8 @@ with backtracking line search.}
 fit_model(cell_type_specific_variables, other_variables, read_depth,
   cellular_proportions, counts, verbose = TRUE, init = NULL,
   fix_overdispersion = FALSE, number_of_resample = 1,
-  use_log_scale_algorithm = FALSE, lambda = 0,
-  return_coefficients_only = FALSE)
+  use_log_scale_algorithm = FALSE, lambda = 1e-06,
+  return_coefficients_only = FALSE, allow_negative_expression = FALSE)
 }
 \arguments{
 \item{cell_type_specific_variables}{an array of n_B x H x K of cell type-independent variables.}
@@ -50,6 +50,10 @@ variables are binary (for example group indicators).}
 \item{return_coefficients_only}{("expert" argument) logical. If \code{FALSE} (default), lfc, log-likelihood,
 Cook's distance and fitted values 
 will be provided together with coefficient estimates. Otherwise, only coefficient estimates are returned.}
+
+\item{allow_negative_expression}{("expert" argument) logical. If \code{FALSE} (default), the cell type-specific expression
+cannot be negative and will be returned in a log scale, along with LFCs. If \code{TRUE}, the cell type-specific expression
+will be on a non-log scale and could possibly be negative, while LFCs will not be returned.}
 }
 \description{
 \code{fit_model} fits a negative binomial distribution 

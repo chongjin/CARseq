@@ -22,6 +22,7 @@
 #' 
 #' @export
 estimate_shrinkage_prior = function(estimates, K, M, H, prob = 0.95) {
+  lambda_minimum = 1e-6
   stopifnot(is.matrix(estimates))
   stopifnot(ncol(estimates) == K + M * H + 1)
   stopifnot(M >= 1)
@@ -37,11 +38,11 @@ estimate_shrinkage_prior = function(estimates, K, M, H, prob = 0.95) {
   }
   LFC_variance_parameter = estimate_variance_parameter(LFCs, prob)
   # the last entry is 1/sigma^2 of the normal prior for
-  # the cell type-specific intercept terms 
+  # the cell type-specific intercept terms
   mean_expression_variance_parameter = estimate_variance_parameter(as.numeric(estimates[, K + seq_len(M*H)]), prob)
   variance_parameter = matrix(c(rep(LFC_variance_parameter, M), rep(mean_expression_variance_parameter, H)),
                               nrow = H, ncol = M + 1)
-  c(rep(0, K), 1.0 / variance_parameter)
+  c(rep(lambda_minimum, K), 1.0 / variance_parameter)
 }
 
 #' Estimate variance parameter of zero-mean normal prior based on a vector of numbers
