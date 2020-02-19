@@ -36,7 +36,8 @@ NULL
 #' @param counts A vector of n_B total read counts observed.
 #' @param verbose logical. If \code{TRUE} (default), display information of negative log-likelihood of each iteration.
 #' @param init ("expert" argument) a numeric vector of (K + H x M + 1) corresponding to the initial value of
-#'             c(beta, gamma, overdispersion). Can be NULL.
+#'             c(beta, gamma, overdispersion). Can be NULL. For gamma, log scale is assumed when
+#'             \code{use_log_scale_algorithm} is TRUE, and non-log scale is assumed when \code{use_log_scale_algorithm} is FALSE.
 #' @param fix_overdispersion ("expert" argument) logical (or numerical for a fixed overdispersion). 
 #'        If \code{FALSE} (default), the overdispersion parameter will be estimated within the function.
 #'        Otherwise, the overdispersion parameter can be 
@@ -261,10 +262,10 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
           coefs[is.na(coefs)] = 0
         } else if (length(coefs) != K + H * M + 1) {
           stop("The length of coefs is not equal to K + H * M + 1")
-        } else if (!use_log_scale_algorithm) {
-          # We need to take exp to make gamma in non-log scale within "coefs"
-          coefs[seq_len(H * M) + K] = exp(coefs[seq_len(H * M) + K])
-        }
+        } # else if (!use_log_scale_algorithm) {
+        #   # We need to take exp to make gamma in non-log scale within "coefs"
+        #   coefs[seq_len(H * M) + K] = exp(coefs[seq_len(H * M) + K])
+        # }
         
         # TODO: use cooks.distance() and fitted() to process the outliers
         # https://stats.stackexchange.com/questions/11632/what-kind-of-residuals-and-cooks-distance-are-used-for-glm
@@ -548,7 +549,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
         iter_overdispersion_update = 1 + iter_overdispersion_update
         number_of_resample_max = number_of_resample = 1
         if (use_log_scale_algorithm) {
-          coefs[seq_len(H * M) + K] = exp(coefs[seq_len(H * M) + K])
+          coefs[seq_len(H * M) + K] = log(coefs[seq_len(H * M) + K])
         }
         init = coefs
       }

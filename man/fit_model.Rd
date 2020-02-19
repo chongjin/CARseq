@@ -28,7 +28,8 @@ in the model, and log(read_depth) can be included as one of the cell type-indepe
 \item{verbose}{logical. If \code{TRUE} (default), display information of negative log-likelihood of each iteration.}
 
 \item{init}{("expert" argument) a numeric vector of (K + H x M + 1) corresponding to the initial value of
-c(beta, gamma, overdispersion). Can be NULL.}
+c(beta, gamma, overdispersion). Can be NULL. For gamma, log scale is assumed when
+\code{use_log_scale_algorithm} is TRUE, and non-log scale is assumed when \code{use_log_scale_algorithm} is FALSE.}
 
 \item{fix_overdispersion}{("expert" argument) logical (or numerical for a fixed overdispersion). 
 If \code{FALSE} (default), the overdispersion parameter will be estimated within the function.
