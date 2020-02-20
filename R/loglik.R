@@ -589,8 +589,11 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   }
   
   
-  # The calculation of coefficients is now complete:
-  if (return_coefficients_only) {
+  # A "lite" version of to return results without reporting cooks distance, LFC change, etc.
+  if (return_coefficients_only || allow_negative_expression) {
+    if (use_log_scale_algorithm) {
+      coefs[seq_len(H * M) + K] = log(coefs[seq_len(H * M) + K])
+    }
     coef_matrix = matrix(coefs, nrow=length(coefs), ncol=1)
     colnames(coef_matrix) = "Estimate"
     rownames(coef_matrix) =
@@ -604,6 +607,10 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
       return(list(coefficients = coef_matrix,
                   value = as.numeric(objective)))
     } else {
+      # TODO: The "diff_matrix" Wald test does not actually work properly due to the fact that quadratic approximation
+      # of likelihood surface at the MLE cannot work well. It is currently still included for debugging purposes.
+      # There is no justification to believe the statistics and p-values reported here.
+      
       # split coefs into beta (cell type-independent) and gamma (cell type-specific)
       beta = coefs[seq_len(K)]
       gamma = matrix(coefs[seq_len(H * M) + K], nrow = H, ncol = M)
@@ -631,6 +638,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
       solve_tXWX = forwardsolve(L, w, upper.tri = TRUE, transpose = FALSE)
       # build diff matrix & z values
       diff_matrix = NULL
+      # These coefficients are actually not in the (reduced) model are set to NAs:
       # calculate logFoldChange and diffSE
       if (M >= 2) {
         diff_matrix = matrix(NA, nrow=(M-1)*H, ncol=4)
@@ -642,7 +650,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
           NA_status = !(is_active_matrix_form[, m] & is_active_matrix_form[, 1])
           diff_matrix_current_rows = (H * (m-2) + 1):(H * (m-1))
           diff_matrix[diff_matrix_current_rows, 1] = 
-            coef_matrix[(K + H * (m-1) + 1):(K + H * m), 1] - coef_matrix[(K + 1):(K + H), 1]
+            add_NA_status(coef_matrix[(K + H * (m-1) + 1):(K + H * m), 1] - coef_matrix[(K + 1):(K + H), 1], NA_status)
           # contrast matrix
           R = matrix(0, nrow = H, ncol = K + H * M)
           for (h in seq_len(H)) {
@@ -658,6 +666,8 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
         # Pr(>|z|)
         diff_matrix[, 4] = pmin(1, 2 * pnorm(-abs(diff_matrix[, 3])))
       }
+      coef_matrix[K + which(is_reduced), ] = NA
+
       return(list(coefficients = coef_matrix,
                   diff_matrix = diff_matrix,
                   value = as.numeric(objective)))
@@ -674,9 +684,10 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
       
       # add cell type-specific intercepts to make the "lambda" prior symmetric on all levels
       is_design_matrix_expanded = TRUE
+      add_intercept_to_dimnames = function(x) {x[[3]] = c(x[[3]], "intercept"); x}
       cell_type_specific_variables_expanded = array(data = cell_type_specific_variables,
                                                     dim = dim(cell_type_specific_variables) + c(0,0,1),
-                                                    dimnames = dimnames(cell_type_specific_variables))
+                                                    dimnames = add_intercept_to_dimnames(dimnames(cell_type_specific_variables)))
       cell_type_specific_variables_expanded[, , dim(cell_type_specific_variables_expanded)[3]] = 1
       
       coefs_init = c(coefs[seq_len(K)],                                   # cell type-independent variables
