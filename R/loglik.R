@@ -46,6 +46,8 @@ NULL
 #'   \item{lfcSE}{A matrix of standard errors of log fold change of cell type-specific effects between between different groups of cell type-specific effects.}
 #'   \item{coefficients}{A matrix of MLE coefficient estimates.}
 #'   \item{coefficientsSE}{A matrix of standard errors of coefficient estimates.}
+#'   \item{overdispersion}{A matrix of overdispersion parameters. The overdispersion parameter
+#'                         is parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion}}.
 #'   \item{elapsed_time}{The time elapsed.}
 #' }
 #' 
@@ -194,6 +196,8 @@ run_CARseq = function(
   lfc_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
   lfcSE_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
   
+  overdispersion_mat = coefficients_mat[, ncol(coefficients_mat), drop=FALSE]
+  
   # 2nd pass run with prior when we need shrinked LFC
   if (shrinked_lfc) {
     
@@ -257,20 +261,22 @@ run_CARseq = function(
          padj = pval_adj_mat,
          shrinked_lfc = shrinked_lfc_mat,
          shrinked_lfcSE = shrinked_lfcSE_mat,
-         shrinked_coefficients = shrinked_coefficients_mat,
-         shrinked_coefficientsSE = shrinked_coefficientsSE_mat,
+         shrinked_coefficients = shrinked_coefficients_mat[, -ncol(shrinked_coefficients_mat), drop=FALSE],
+         shrinked_coefficientsSE = shrinked_coefficientsSE_mat[, -ncol(shrinked_coefficients_mat), drop=FALSE],
          lfc = lfc_mat,
          lfcSE = lfcSE_mat,
-         coefficients = coefficients_mat,
-         coefficientsSE = coefficientsSE_mat,
+         coefficients = coefficients_mat[, -ncol(coefficients_mat), drop=FALSE],
+         coefficientsSE = coefficientsSE_mat[, -ncol(coefficients_mat), drop=FALSE],
+         overdispersion = overdispersion_mat,
          elapsed_time = elapsed)
   } else {
     list(p = pval_mat,
          padj = pval_adj_mat,
          lfc = lfc_mat,
          lfcSE = lfcSE_mat,
-         coefficients = coefficients_mat,
-         coefficientsSE = coefficientsSE_mat,
+         coefficients = coefficients_mat[, -ncol(coefficients_mat), drop=FALSE],
+         coefficientsSE = coefficientsSE_mat[, -ncol(coefficients_mat), drop=FALSE],
+         overdispersion = overdispersion_mat,
          elapsed_time = elapsed)
   }
 }
@@ -574,7 +580,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
                                 sum(lambda_vector * coefs[-length(coefs)]^2 * 0.5)
                                 
           if (!is.finite(negloglik_curr)) {
-            message("The optimization failed to converge.")
+            if (verbose) message("The optimization failed to converge.")
             break
           }
           
@@ -740,7 +746,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
         }
         
         # throw a warning of maxiter reached
-        if (inner_iter == maxiter) {
+        if (inner_iter == maxiter && verbose) {
           message(paste("Max number of iterations", maxiter, "has been reached."))
         }
         

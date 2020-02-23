@@ -47,6 +47,8 @@ Returns a list mostly of matrices. Note that the matrices with "shrinked" in the
   \item{lfcSE}{A matrix of standard errors of log fold change of cell type-specific effects between between different groups of cell type-specific effects.}
   \item{coefficients}{A matrix of MLE coefficient estimates.}
   \item{coefficientsSE}{A matrix of standard errors of coefficient estimates.}
+  \item{overdispersion}{A matrix of overdispersion parameters. The overdispersion parameter
+                        is parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion}}.
   \item{elapsed_time}{The time elapsed.}
 }
 }
