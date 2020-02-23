@@ -48,7 +48,7 @@ Returns a list mostly of matrices. Note that the matrices with "shrinked" in the
   \item{coefficients}{A matrix of MLE coefficient estimates.}
   \item{coefficientsSE}{A matrix of standard errors of coefficient estimates.}
   \item{overdispersion}{A matrix of overdispersion parameters. The overdispersion parameter
-                        is parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion}}.
+                        is parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion}.}
   \item{elapsed_time}{The time elapsed.}
 }
 }
@@ -57,6 +57,7 @@ Conduct a CARseq test
 }
 \examples{
 data("n50DE221rep1")
+# As an example, run only the first 10 genes among the all 10,000 genes to save time:
 res = run_CARseq(count_matrix = n50DE221rep1$observed_read_count[1:10,],
                  cellular_proportions = n50DE221rep1$rho,
                  groups = gl(2, 25),

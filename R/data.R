@@ -1,6 +1,6 @@
 #' A simulated dataset of read counts of 50 samples and 10,000 from a mixture of three cell types.
 #'
-#' The first 25 samples belong to one group, and the rest samples belong to the other group.
+#' The first 25 samples belong to one group, and the rest 25 samples belong to the other group.
 #' 
 #' Within the first 2,000 genes, the first and second cell types are differentially expressed  between two groups,
 #' but the third cell type is not differentially expressed. The power is generally low to detect them.
@@ -17,5 +17,4 @@
 #'   \item{clinical_variables}{A matrix of one cell type-independent covariate, RIN.}
 #'   \item{d}{Numeric. A vector of 50 sample read depths.}
 #' }
-#' @source \url{http://www.diamondse.info/}
 "n50DE221rep1"

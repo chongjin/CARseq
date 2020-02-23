@@ -47,12 +47,13 @@ NULL
 #'   \item{coefficients}{A matrix of MLE coefficient estimates.}
 #'   \item{coefficientsSE}{A matrix of standard errors of coefficient estimates.}
 #'   \item{overdispersion}{A matrix of overdispersion parameters. The overdispersion parameter
-#'                         is parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion}}.
+#'                         is parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion}.}
 #'   \item{elapsed_time}{The time elapsed.}
 #' }
 #' 
 #' @examples
 #' data("n50DE221rep1")
+#' # As an example, run only the first 10 genes among the all 10,000 genes to save time:
 #' res = run_CARseq(count_matrix = n50DE221rep1$observed_read_count[1:10,],
 #'                  cellular_proportions = n50DE221rep1$rho,
 #'                  groups = gl(2, 25),
@@ -71,7 +72,8 @@ run_CARseq = function(
     cores = 1) {
   
   elapsed = Sys.time()
-  
+  if (!is.matrix(count_matrix)) count_matrix = as.matrix(count_matrix)
+  if (!is.matrix(cellular_proportions)) cellular_proportions = as.matrix(cellular_proportions)
   n = ncol(count_matrix)
   G = nrow(count_matrix)
   stopifnot(length(groups) == n)
@@ -103,12 +105,13 @@ run_CARseq = function(
   }
   
   # allocate cores for parallel computation
+  `%dopar%` = foreach::`%do%`
   if (cores >= 2) {
     doMC::registerDoMC(cores)
+    `%dopar%` = foreach::`%dopar%`
   }
   
   # calculate LR statistics
-  `%dopar%` = foreach::`%dopar%`
   result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
     fit_model_list = tryCatch({
       pvalues = rep(NA, H)
@@ -191,7 +194,7 @@ run_CARseq = function(
   rownames(pval_mat) = rownames(count_matrix)[seq_len(G)]
   # adjusted p values -- Benjamini-Hochberg is used here. Can also use qvalue::qvalue as an alternative:
   pval_adj_mat = pval_mat
-  pval_adj_mat[] = apply(pval_adj_mat, 1, function(x) stats::p.adjust(x, method = "BH"))
+  pval_adj_mat[] = apply(pval_adj_mat, 2, function(x) stats::p.adjust(x, method = "BH"))
   # MLE estimates and standard error estimators for log fold change of cell type-specific covariates:
   lfc_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
   lfcSE_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))

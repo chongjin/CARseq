@@ -11,14 +11,11 @@
   \item{clinical_variables}{A matrix of one cell type-independent covariate, RIN.}
   \item{d}{Numeric. A vector of 50 sample read depths.}
 }}
-\source{
-\url{http://www.diamondse.info/}
-}
 \usage{
 n50DE221rep1
 }
 \description{
-The first 25 samples belong to one group, and the rest samples belong to the other group.
+The first 25 samples belong to one group, and the rest 25 samples belong to the other group.
 }
 \details{
 Within the first 2,000 genes, the first and second cell types are differentially expressed  between two groups,
