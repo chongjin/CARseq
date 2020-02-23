@@ -4,9 +4,16 @@
 \alias{negloglik}
 \title{negative log-likelihood function of a CARseq negative binomial model}
 \usage{
-negloglik(coefs, cell_type_specific_variables, other_variables, read_depth,
-  cellular_proportions, counts, use_log_scale_params = FALSE,
-  verbose = FALSE)
+negloglik(
+  coefs,
+  cell_type_specific_variables,
+  other_variables,
+  read_depth,
+  cellular_proportions,
+  counts,
+  use_log_scale_params = FALSE,
+  verbose = FALSE
+)
 }
 \arguments{
 \item{coefs}{a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,

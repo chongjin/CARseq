@@ -10,13 +10,270 @@
 #' @keywords package
 #' @useDynLib CARseq
 #' @importFrom Rcpp sourceCpp
+#' @import foreach
+#' @import doMC
 #' @import matrixStats
-#' @import nloptr
 #' @import zetadiv
 #' @import MASS
 #' @import bvls
+#' @import nloptr
 NULL
 
+
+#' Conduct a CARseq test
+#'
+#' @param count_matrix A matrix of G x n total read counts observed.
+#' @param cellular_proportions A matrix of n x H of cellular proportions.
+#' @param groups A vector of length n indicating groups that we would like to test. Will be coerced to be factors.
+#' @param formula A formula of an intercept term "1" and other cell type-indepedent variables. Can be NULL.
+#' @param data A data frame containing the cell type-indepedent variables specified in \code{formula}. Can be NULL.
+#' @param read_depth A vector of n sample-specific read depths. It it used as an offset term in the
+#'        regression model. Alternatively, it can be 1, NA or NULL so that we don't have an offset term
+#'        in the model, and log(read_depth) can be included as one of the cell type-independent variables.
+#' @param shrinked_lfc Logical. If \code{TRUE} (default), provide shrinked log fold change for cell type-specific variables.
+#' @param cores Numeric. Number of cores to use in \code{doMC::registerDoMC} which uses system \code{fork} call.
+#'
+#' @return
+#' Returns a list mostly of matrices. Note that the matrices with "shrinked" in their names are only available when \code{shrinked_lfc} is \code{TRUE}: 
+#' \describe{
+#'   \item{p}{A matrix of G x H p-values}
+#'   \item{padj}{A matrix of G x H p-values adjusted using Benjamini & Hochberg (1995).}
+#'   \item{shrinked_lfc}{A matrix of shrinked log fold change between cell type-specific effects.}
+#'   \item{shrinked_lfcSE}{A matrix of standard errors of shrinked log fold change of cell type-specific effects between different groups.}
+#'   \item{shrinked_coefficients}{A matrix of shrinked coefficient estimates.}
+#'   \item{shrinked_coefficientsSE}{A matrix of standard errors of shrinked coefficient estimates.}
+#'   \item{lfc}{A matrix of log fold change between cell type-specific effects.}
+#'   \item{lfcSE}{A matrix of standard errors of log fold change of cell type-specific effects between between different groups of cell type-specific effects.}
+#'   \item{coefficients}{A matrix of MLE coefficient estimates.}
+#'   \item{coefficientsSE}{A matrix of standard errors of coefficient estimates.}
+#'   \item{elapsed_time}{The time elapsed.}
+#' }
+#' 
+#' @examples
+#' data("n50DE221rep1")
+#' res = run_CARseq(count_matrix = n50DE221rep1$observed_read_count[1:10,],
+#'                  cellular_proportions = n50DE221rep1$rho,
+#'                  groups = gl(2, 25),
+#'                  formula = ~ RIN,
+#'                  data = n50DE221rep1$clinical_variables,
+#'                  read_depth = n50DE221rep1$d,
+#'                  shrinked_lfc = TRUE,
+#'                  cores = 2
+#' )
+#'
+#' @export
+run_CARseq = function(
+    count_matrix, cellular_proportions, groups, formula = NULL, data = NULL,
+    read_depth = 1, 
+    shrinked_lfc = TRUE,
+    cores = 1) {
+  
+  elapsed = Sys.time()
+  
+  n = ncol(count_matrix)
+  G = nrow(count_matrix)
+  stopifnot(length(groups) == n)
+  stopifnot(nrow(data) == n)
+  stopifnot(nrow(cellular_proportions) == n)
+  # "formula" contains covariates that are cell type-independent.
+  # If an intercept term is detected, it will be automatically removed with a warning.
+  # construct the matrix of "other_variables" from "formula" and "data":
+  other_variables = NULL
+  K = 0
+  if (!is.null(formula)) {
+    stopifnot(identical(class(formula), "formula"))
+    other_variables = model.matrix(formula, data = as.data.frame(data))
+    # remove the intercept term, which is covered in "groups"
+    other_variables = other_variables[, apply(other_variables, 2, function(x) any(x != 1)), drop = FALSE]
+    K = ncol(other_variables)
+  }
+  H = ncol(cellular_proportions)
+  
+  # construct the array of "cell_type_specific_variables"
+  # (an array of n x H x M of cell type-independent variables) from "groups"
+  # specify design matrix in full model
+  groups = as.factor(groups)
+  M = length(levels(groups))
+  stopifnot(M >= 2)
+  cell_type_specific_variables_full = array(0, dim=c(n, H, M))
+  for (m in seq_len(M)) {
+    cell_type_specific_variables_full[groups == levels(groups)[m], , m] = 1
+  }
+  
+  # allocate cores for parallel computation
+  if (cores >= 2) {
+    doMC::registerDoMC(cores)
+  }
+  
+  # calculate LR statistics
+  `%dopar%` = foreach::`%dopar%`
+  result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
+    fit_model_list = tryCatch({
+      pvalues = rep(NA, H)
+      # call CARseq::fit_model to obtain estimates and negative log-likelihood
+      res_optim_full = CARseq::fit_model(
+        cell_type_specific_variables = cell_type_specific_variables_full,
+        other_variables = other_variables,
+        read_depth = read_depth,
+        cellular_proportions = cellular_proportions,
+        counts = count_matrix[j, ],
+        init = NULL,
+        fix_overdispersion = FALSE,
+        number_of_resample = 1,
+        use_log_scale_algorithm = FALSE,
+        lambda = 0,
+        verbose = FALSE)
+      
+      for (h in seq_len(H)) {
+        # specify design matrix in reduced model
+        cell_type_specific_variables_reduced = array(0, dim=c(n, H, M))
+        for (m in seq_len(M)) {
+          cell_type_specific_variables_reduced[groups == levels(groups)[m], , m] = 1
+        }
+        # For the cell type specified by indices:
+        cell_type_specific_variables_reduced[, h, 1] = 1
+        cell_type_specific_variables_reduced[, h, -1] = 0
+
+        # fit reduced model
+        res_optim = CARseq::fit_model(
+          cell_type_specific_variables = cell_type_specific_variables_reduced,
+          other_variables = other_variables,
+          read_depth = read_depth,
+          cellular_proportions = cellular_proportions,
+          counts = count_matrix[j, ],
+          init = NULL,
+          fix_overdispersion = FALSE,
+          number_of_resample = 1,
+          use_log_scale_algorithm = FALSE,
+          lambda = 0,
+          verbose = FALSE)
+
+        pvalues[h] = pchisq(2*(res_optim$value - res_optim_full$value), df = M - 1, lower.tail = FALSE)
+      }
+      list(pvalues        = pvalues,
+           coefficients   = res_optim_full$coefficients,
+           lfc            = res_optim_full$lfc
+      )
+    }, error = function(e) {
+      NULL
+    }, finally = {
+    })
+
+    fit_model_list
+  }
+
+  first_j_not_NULL = {
+    j = 1
+    while (is.null(result_list[[j]])) j = j + 1
+    j
+  }
+  coefficient_names = rownames(result_list[[first_j_not_NULL]]$coefficients)
+  coefficients_mat = do.call(rbind, lapply(result_list, function(x) {
+    if (is.null(x)) {
+      rep(NA, length(coefficient_names))
+    } else {
+      x$coefficients[,1]
+    }
+  }))
+  coefficientsSE_mat = do.call(rbind, lapply(result_list, function(x) {
+    if (is.null(x)) {
+      rep(NA, length(coefficient_names))
+    } else {
+      x$coefficients[,2]
+    }
+  }))
+  colnames(coefficients_mat) = colnames(coefficientsSE_mat) = coefficient_names
+  rownames(coefficients_mat) = rownames(coefficientsSE_mat) = rownames(count_matrix)[seq_len(G)]
+  pval_mat = do.call(rbind, lapply(result_list, function(x) if (is.null(x)) rep(NA, H) else x$pvalues))
+  colnames(pval_mat) = colnames(cellular_proportions)
+  rownames(pval_mat) = rownames(count_matrix)[seq_len(G)]
+  # adjusted p values -- Benjamini-Hochberg is used here. Can also use qvalue::qvalue as an alternative:
+  pval_adj_mat = pval_mat
+  pval_adj_mat[] = apply(pval_adj_mat, 1, function(x) stats::p.adjust(x, method = "BH"))
+  # MLE estimates and standard error estimators for log fold change of cell type-specific covariates:
+  lfc_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
+  lfcSE_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
+  
+  # 2nd pass run with prior when we need shrinked LFC
+  if (shrinked_lfc) {
+    
+    lambda_empirical_bayes = estimate_shrinkage_prior(estimates=coefficients_mat, K=K, M=M, H=H)
+    
+    shrinked_result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
+      
+      fit_model_list = tryCatch({
+        pvalues = rep(NA, H)
+        # call CARseq::fit_model to obtain estimates and negative log-likelihood
+        res_optim_full = CARseq::fit_model(
+          cell_type_specific_variables = cell_type_specific_variables_full,
+          other_variables = other_variables,
+          read_depth = read_depth,
+          cellular_proportions = cellular_proportions,
+          counts = count_matrix[j, ],
+          init = NULL,
+          fix_overdispersion = FALSE,
+          number_of_resample = 1,
+          use_log_scale_algorithm = TRUE,
+          lambda = lambda_empirical_bayes,
+          verbose = FALSE)
+        
+        list(coefficients   = res_optim_full$coefficients,
+             lfc            = res_optim_full$lfc
+        )
+        
+      }, error = function(e) {
+        NULL
+      }, finally = {
+      })
+      
+      fit_model_list
+    }
+  
+    shrinked_coefficient_names = rownames(shrinked_result_list[[first_j_not_NULL]]$coefficients)
+    shrinked_coefficients_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {
+      if (is.null(x)) {
+        rep(NA, length(shrinked_coefficient_names))
+      } else {
+        x$coefficients[,1]
+      }
+    }))
+    shrinked_coefficientsSE_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {
+      if (is.null(x)) {
+        rep(NA, length(shrinked_coefficient_names))
+      } else {
+        x$coefficients[,2]
+      }
+    }))
+    colnames(shrinked_coefficients_mat) = colnames(shrinked_coefficientsSE_mat) = shrinked_coefficient_names
+    rownames(shrinked_coefficients_mat) = rownames(shrinked_coefficientsSE_mat) = rownames(count_matrix)[seq_len(G)]
+    shrinked_lfc_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
+    shrinked_lfcSE_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
+  }
+  
+  elapsed = Sys.time() - elapsed
+  
+  if (shrinked_lfc) {
+    list(p = pval_mat,
+         padj = pval_adj_mat,
+         shrinked_lfc = shrinked_lfc_mat,
+         shrinked_lfcSE = shrinked_lfcSE_mat,
+         shrinked_coefficients = shrinked_coefficients_mat,
+         shrinked_coefficientsSE = shrinked_coefficientsSE_mat,
+         lfc = lfc_mat,
+         lfcSE = lfcSE_mat,
+         coefficients = coefficients_mat,
+         coefficientsSE = coefficientsSE_mat,
+         elapsed_time = elapsed)
+  } else {
+    list(p = pval_mat,
+         padj = pval_adj_mat,
+         lfc = lfc_mat,
+         lfcSE = lfcSE_mat,
+         coefficients = coefficients_mat,
+         coefficientsSE = coefficientsSE_mat,
+         elapsed_time = elapsed)
+  }
+}
 
 #' fit a CARseq negative binomial model 
 #' using iteratively weighted least squares / non-negative least squares
@@ -26,6 +283,8 @@ NULL
 #' whose mean is a sum of nonnegative terms with covariates.
 #' The overdispersion parameter is estimated by maximizing the 
 #' adjusted profile log-likelihood.
+#' 
+#' Please use the wrapper \link{run_CARseq}. This function is not intended for general use.
 #'
 #' @param cell_type_specific_variables an array of n_B x H x K of cell type-independent variables.
 #' @param other_variables a design matrix of n_B x M of cell type-specific variables. Can be NULL.
@@ -274,7 +533,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
         
         # Convergence conditions of Iteratively Weighted Least Squares
         epsilon_convergence = 1e-6
-        maxiter = 50
+        maxiter = 100
         # The negative log-likelihood needs to decrease each iteration of the loop.
         # Break the loop if it does not decrease a lot, or it increases:
         inner_iter = 0
@@ -1171,8 +1430,8 @@ grad_negloglik = function(coefs, cell_type_specific_variables, other_variables, 
 #' 
 #' \code{negloglik_legacy} provides a negative log-likelihood function 
 #' of negative binomial distribution 
-#' whose mean is a sum of nonnegative terms with covariates 
-#'
+#' whose mean is a sum of nonnegative terms with covariates.
+#' 
 #' @param coefs a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,
 #'   gamma is a matrix of H x M dimension of cell type-specific non-negative coefficients, and overdispersion is a scalar.
 #' @param cell_type_specific_variables an array of n_B x H x K of cell type-independent variables.
@@ -1200,7 +1459,6 @@ grad_negloglik = function(coefs, cell_type_specific_variables, other_variables, 
 #' cellular_proportions = cellular_proportions / rowSums(cellular_proportions)
 #' counts = round(runif(n_B, min = 100, max = 200))
 #' CARseq:::negloglik_legacy(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts)
-#' @export
 negloglik_legacy = function(coefs, cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts) {
   # obtain H, M, K, n_B
   n_B = length(counts)
@@ -1463,7 +1721,7 @@ fit_model_legacy = function(init = NULL, cell_type_specific_variables, other_var
       
       # throw a warning of maxiter reached
       if (inner_iter == maxiter) {
-        warning("Max number of iterations has been reached.")
+        warning(sprintf("Max number of iterations %d has been reached.", maxiter))
       }
       
       number_of_successful_iter = number_of_successful_iter + 1
@@ -1538,540 +1796,3 @@ fit_model_legacy = function(init = NULL, cell_type_specific_variables, other_var
 
 
 
-# #' Conduct a CARseq test
-# #' 
-# #' @param cell_type_specific_variables an array of n_B x H x K of cell type-independent variables.
-# #' @param other_variables a design matrix of n_B x M of cell type-specific variables. Can be NULL.
-# #' @param read_depth a vector of n_B sample-specific read depths. It it used as an offset term in the
-# #'        regression model. Alternatively, it can be 1, NA or NULL so that we don't have an offset term
-# #'        in the model, and log(read_depth) can be included as one of the cell type-independent variables.
-# #' @param cellular_proportions a matrix of n_B x H of cellular proportions.
-# #' @param counts A vector of n_B total read counts observed.
-# #' @param verbose logical. If \code{TRUE} (default), display information of negative log-likelihood of each iteration.
-# #' @param init ("expert" argument) a numeric vector of (K + H x M + 1) corresponding to the initial value of
-# #'             c(beta, gamma, overdispersion). Can be NULL.
-# #' @param fix_overdispersion ("expert" argument) logical (or numerical for a fixed overdispersion). 
-# #'        If \code{FALSE} (default), the overdispersion parameter will be estimated within the function.
-# #'        Otherwise, the overdispersion parameter can be 
-# #' @param number_of_resample ("expert" argument) numeric. The number of initial values we use in optimization. 
-# #'        The optimization algorithm generally is not sensitive to initial values, so we advise to leave it
-# #'        as the default value 1.
-# #' @param use_log_scale_algorithm ("expert" argument) logical. The default is FALSE, where the cell type-specific effects are
-# #'        fitted on a non-log scale and non-negative least squares is used (implemented in bvls).
-# #'        This is generally advisable than fitting them on a log scale, especially when the cell type-specific
-# #'        variables are binary (for example group indicators).
-# #' @param lambda ("expert" argument) numerical. \eqn{1/\sigma^2} in Gaussian prior. Only takes effect when 
-# #'        \code{use_log_scale_algorithm} is \code{TRUE}. Defaults to 0. It can also be a vector of length 
-# #'        \eqn{K + H * (M + 1)}.
-# #' @param return_coefficients_only ("expert" argument) logical. If \code{FALSE} (default), lfc, log-likelihood,
-# #'        Cook's distance and fitted values 
-# #'        will be provided together with coefficient estimates. Otherwise, only coefficient estimates are returned.
-# #'
-# run_CARseq = function(
-#   cell_type_specific_variables, other_variables, read_depth, cellular_proportions, counts,
-#   # TReCPC = c("UnadjTReCPC", "AdjTReCPC", "OldAdjTReCPC", "NoTReCPC", "SurrogateVariables1", "SurrogateVariables2", "SurrogateVariables3", "NoCovariate", "SVsCARseqPipelines"),
-#   # RD = c("RDcovariate", "RDoffset"),
-#   outlier = c("Cooks4overN", "CooksF.99", "UseAll"),
-#   # cellfreq = c("ICeDT", "CIBERSORT"),
-#   # permutation = c("Permuted", "Unpermuted"),
-#   # distribution = c("chisq1df", "chisqmix"),
-#   verbose = TRUE,
-#   use_log_scale_algorithm = FALSE,
-#   ncpus = 12
-#   # , batch = 1,
-#   # batchsize = 100
-# ) {
-#   
-#   library(MASS)
-#   library(zetadiv)
-#   library(multcomp)
-#   
-#   # read count matrix
-#   
-#   # design matrix of cell type-independent variables
-#   
-#   # 
-#   
-#   
-#   # Read counts:
-#   # CMC data in TPM (see psychENCODE/deconvolution.Rmd)
-#   CMC_TPM = readRDS("../data/CMC_TPM.rds")
-#   dim(CMC_TPM)
-#   CMC_TPM[1:5,1:5]
-#   # CMC data in counts -- CARseq needs raw counts
-#   CMC_count = readRDS("../data/CMC_MSSM-Penn-Pitt_Paul_geneExpressionRaw.rds")$so1
-#   dim(CMC_count)
-#   CMC_count[1:5,1:5]
-#   if (is.null(batchsize) || is.na(batchsize) || is.infinite(batchsize) || batchsize == 0) {
-#     batchsize = nrow(CMC_count)
-#   }
-#   # mean_count_per_gene = rowMeans(CMC_count)
-#   # table(mean_count_per_gene > 100)
-#   # CMC label
-#   CMC_clinical = read.csv("../data/CMC-CMC_HBCC_clinical_.csv") 
-#   dim(CMC_clinical)
-#   names(CMC_clinical)
-#   CMC_key = read.csv("../data/Release3_SampleID_key.csv")
-#   dim(CMC_key)
-#   names(CMC_key)
-#   CMC_key["Individual_ID","RNAseq.Sample_RNA_ID"]
-#   CMC_clinical_merged = merge(CMC_clinical, CMC_key, by.x="Individual.ID", by.y="Individual_ID")
-#   CMC_clinical_merged = CMC_clinical_merged[match(colnames(CMC_TPM), CMC_clinical_merged$RNAseq.Sample_RNA_ID), ]
-#   CMC_clinical_merged = CMC_clinical_merged[CMC_clinical_merged$Dx %in% c("Control","SCZ"), ]
-#   # read clinical variables from Paul Little
-#   clinical_Control = readRDS("../data/trec_dat_post_QC_PCA_Control.rds")
-#   clinical_SCZ = readRDS("../data/trec_dat_post_QC_PCA_SCZ.rds")
-#   # log_depth + Institution + sex + age of death + PMI + RIN +
-#   #   (original) genotype PC1 to PC3 (capturing ethnicity) + clustered LIB +
-#   #   residual gene expression PC1 to PCx (latent batch effect)
-#   clinical_variables_all = rbind(clinical_Control$DATA, clinical_SCZ$DATA)
-#   CMC_clinical_merged2 = merge(CMC_clinical_merged, clinical_variables_all, by.x="RNAseq.Sample_RNA_ID", by.y="RNAseq_sample_id",
-#                                all = FALSE, suffixes = c(".x", ""))
-#   # rescale age_death, PMI, RIN, log_depth
-#   CMC_clinical_merged2$scaled_age_death = scale(CMC_clinical_merged2$age_death)
-#   CMC_clinical_merged2$scaled_log_depth = scale(CMC_clinical_merged2$log_depth)
-#   CMC_clinical_merged2$scaled_PMI = scale(CMC_clinical_merged2$PMI)
-#   CMC_clinical_merged2$scaled_RIN = scale(CMC_clinical_merged2$RIN)
-#   # rescale PCs and SVs
-#   covariates_to_scale = grep("sv|PC", colnames(CMC_clinical_merged2))
-#   for (m in covariates_to_scale) {
-#     CMC_clinical_merged2[, m] = scale(CMC_clinical_merged2[, m])
-#   }
-#   # we need to remove the intercept term from the matrix since it will be covered in the cell-type specific effects
-#   # Should we use TReC PCs unadjusted or adjusted for cellular frequency estimates?
-#   colData_rse_filtered = readRDS("../data/colData_rse_filtered.rds")
-#   CMC_clinical_merged2 = cbind(CMC_clinical_merged2, colData_rse_filtered[,
-#                                                                           (ncol(colData_rse_filtered) - 5):ncol(colData_rse_filtered)])
-#   if (identical(TReCPC, "NoTReCPC")) {
-#     clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                          Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                          genoPC1 + genoPC2 + genoPC3 +
-#                                          libclust,
-#                                        data = CMC_clinical_merged2
-#     )[, -1]
-#   } else if (identical(TReCPC, "SurrogateVariables1")) {
-#     if (identical(cellfreq, "CIBERSORT")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + sv1_CIBERSORT,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     } else if (identical(cellfreq, "ICeDT")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + sv1_ICeDT,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     }
-#   } else if (identical(TReCPC, "SurrogateVariables2")) {
-#     if (identical(cellfreq, "CIBERSORT")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + sv1_CIBERSORT + sv2_CIBERSORT,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     } else if (identical(cellfreq, "ICeDT")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + sv1_ICeDT + sv2_ICeDT,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     }
-#   } else if (identical(TReCPC, "SurrogateVariables3")) {
-#     if (identical(cellfreq, "CIBERSORT")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + sv1_CIBERSORT + sv2_CIBERSORT + sv3_CIBERSORT,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     } else if (identical(cellfreq, "ICeDT")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + sv1_ICeDT + sv2_ICeDT + sv3_ICeDT,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     }
-#   } else if (identical(TReCPC, "UnadjTReCPC")) {
-#     clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                          Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                          genoPC1 + genoPC2 + genoPC3 +
-#                                          libclust + noCSadjusttrecPC1 + noCSadjusttrecPC2 + noCSadjusttrecPC3,
-#                                        data = CMC_clinical_merged2
-#     )[, -1]
-#     ## TODO
-#   } else if (identical(TReCPC, "OldAdjTReCPC")) {
-#     clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                          Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                          genoPC1 + genoPC2 + genoPC3 +
-#                                          libclust + CSadjusttrecPC1 + CSadjusttrecPC2 + CSadjusttrecPC3,
-#                                        data = CMC_clinical_merged2
-#     )[, -1]
-#   } else if (identical(TReCPC, "AdjTReCPC")) {
-#     if (identical(cellfreq, "ICeDT")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + trecPC1_ICeDT_adjusted + trecPC2_ICeDT_adjusted + trecPC3_ICeDT_adjusted,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     } else {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + Institution +
-#                                            Sex + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclust + trecPC1_CIBERSORT_adjusted + trecPC2_CIBERSORT_adjusted + trecPC3_CIBERSORT_adjusted,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     }
-#   } else if (identical(TReCPC, "NoCovariate")) {
-#     clinical_variables = model.matrix( ~ 1 + scaled_log_depth,
-#                                        data = CMC_clinical_merged2
-#     )[, -1, drop=FALSE]
-#   } else if (grepl("CARseqPipelines", TReCPC)) {
-#     # read files provided by Wei Sun
-#     CMC_count = readRDS("../data/trec_filtered_scz_control.rds")  # 20788x527 matrix
-#     clinical_variables_raw = readRDS("../data/dat_cavariates_scz_control_with_svs.rds")    # 527x33 matrix
-#     # for code compatibility:
-#     CMC_clinical_merged2 = as.data.frame(clinical_variables_raw)
-#     CMC_clinical_merged2$Dx = ifelse(CMC_clinical_merged2$DxSCZ == 1, "SCZ", "Control")
-#     CMC_clinical_merged2$RNAseq.Sample_RNA_ID = colnames(CMC_count)
-#     # rescale age_death, PMI, RIN, RIN^2, log_depth
-#     CMC_clinical_merged2$scaled_age_death = scale(CMC_clinical_merged2$age_death)
-#     CMC_clinical_merged2$scaled_log_depth = scale(CMC_clinical_merged2$log_depth)
-#     CMC_clinical_merged2$scaled_PMI = scale(CMC_clinical_merged2$PMI)
-#     CMC_clinical_merged2$scaled_RIN = scale(CMC_clinical_merged2$RIN)
-#     CMC_clinical_merged2$scaled_RIN2 = scale(CMC_clinical_merged2$RIN2)
-#     # rescale PCs and SVs
-#     covariates_to_scale = grep("sv|PC", colnames(CMC_clinical_merged2))
-#     for (m in covariates_to_scale) {
-#       CMC_clinical_merged2[, m] = scale(CMC_clinical_merged2[, m])
-#     }
-#     if (identical(TReCPC, "SVsCARseqPipelines")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + InstitutionPenn + InstitutionPitt +
-#                                            genderMale + scaled_age_death + scaled_PMI + scaled_RIN + scaled_RIN2 +
-#                                            genoPC1 + genoPC2 + genoPC3 + genoPC4 + genoPC5 +
-#                                            libclustB + libclustbase + libclustC + libclustD + libclustE + libclustF + libclustG +
-#                                            sv1 + sv2 + sv3 + sv4 + sv5 + sv6 + sv7 + sv8 + sv9 + sv10 + sv11 + sv12,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     } else if (identical(TReCPC, "SV5CARseqPipelines")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + InstitutionPenn + InstitutionPitt +
-#                                            genderMale + scaled_age_death + scaled_PMI + scaled_RIN + scaled_RIN2 +
-#                                            genoPC1 + genoPC2 +
-#                                            libclustB + libclustbase + libclustC + libclustD + libclustE + libclustF + libclustG +
-#                                            sv1 + sv2 + sv3 + sv4 + sv5,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     } else if (identical(TReCPC, "SV0CARseqPipelines")) {
-#       clinical_variables = model.matrix( ~ 1 + scaled_log_depth + InstitutionPenn + InstitutionPitt +
-#                                            genderMale + scaled_age_death + scaled_PMI + scaled_RIN + 
-#                                            genoPC1 + genoPC2 + genoPC3 +
-#                                            libclustB + libclustbase + libclustC + libclustD + libclustE + libclustF + libclustG ,
-#                                          data = CMC_clinical_merged2
-#       )[, -1]
-#     }
-#   }
-#   
-#   disease = CMC_clinical_merged2$Dx
-#   table(disease, useNA="ifany")
-#   # CMC_TPM = CMC_TPM[, match(CMC_clinical_merged2$RNAseq.Sample_RNA_ID, colnames(CMC_TPM))]
-#   CMC_count = CMC_count[, match(CMC_clinical_merged2$RNAseq.Sample_RNA_ID, colnames(CMC_count))]
-#   # dim(CMC_TPM)
-#   
-#   # permute the disease label as a control to see whether we have obtained biological signals:
-#   # R 3.6.0+ will need this for reproducibility when compared to earlier versions:
-#   if (as.numeric(R.version$minor) >= 6.0) RNGkind(sample.kind = "Rounding")
-#   set.seed(1234)
-#   # whether we need to permute the disease labels:
-#   if (identical(permutation, "Permuted")) {
-#     disease = sample(disease)
-#   } else if (identical(permutation, "Unpermuted")) {
-#     # do nothing
-#   }
-#   
-#   # proportion estimates from either CIBERSORT or ICeDT
-#   # prop contains all cellular frequencies;
-#   # we use rho in the analysis, which is prop restricted to a subset of samples.
-#   prop = NULL
-#   if (identical(cellfreq, "CIBERSORT")) {
-#     prop = readRDS("../data/MTG/prop_MTG.rds")$CIBERSORT
-#   } else if (identical(cellfreq, "ICeDT")) {
-#     prop = readRDS("../data/MTG/prop_MTG.rds")$ICeDT
-#   }
-#   # drop Micro & OPC and rescale:
-#   prop = prop[,c("Astro", "Exc", "Inh", "Oligo")]
-#   prop = prop / rowSums(prop)
-#   
-#   # differential expression
-#   x = rep(0, length(disease))
-#   x[disease == "SCZ"] = 1
-#   rho = prop[match(CMC_clinical_merged2$RNAseq.Sample_RNA_ID, rownames(prop)), ]
-#   # rho = na.omit(rho)
-#   H = ncol(rho)
-#   n_B = nrow(rho)
-#   
-#   # Is read depth an offset term or another cell type-independent covariate in the model?
-#   d = NULL
-#   K = NULL
-#   if (identical(RD, "RDoffset")) {
-#     d = exp(clinical_variables[, "scaled_log_depth"])
-#     cols_remained = !(colnames(clinical_variables) %in% "scaled_log_depth")
-#     if (length(cols_remained) == 1) {
-#       clinical_variables = NULL
-#       K = 0
-#     } else {
-#       clinical_variables = clinical_variables[, !(colnames(clinical_variables) %in% "scaled_log_depth")]
-#       K = ncol(clinical_variables)
-#     }
-#   } else if (identical(RD, "RDcovariate")) {
-#     # we are not going to let d=1 since we want to make the regression coefficient of scaled_log_depth around 0
-#     # d = 1  # do not specify the offset term
-#     d = exp(CMC_clinical_merged2$log_depth)
-#     K = ncol(clinical_variables)
-#     # do nothing
-#   }
-#   
-#   if (identical(outlier, "PriorEmpiricalBayes")) {
-#     config_UseAll = sub("PriorEmpiricalBayes", "UseAll", config)
-#     estimates = readRDS(file.path(config_UseAll, "coefficients_mat.rds"))
-#     lambda_empirical_bayes = estimate_shrinkage_prior(estimates=estimates, K=K, M=2, H=4)
-#   }
-#   
-#   # only use about 15000 ~ 20000 highly expressed genes:
-#   rd75 = apply(CMC_count, 1, function(x) quantile(x, 0.75))
-#   
-#   # specify design matrix in full model
-#   cell_type_specific_variables_full = array(0, dim=c(n_B, H, 2))
-#   cell_type_specific_variables_full[x == 0, , 1] = 1
-#   cell_type_specific_variables_full[x == 1, , 2] = 1
-#   
-#   # 5 tests, 1 overdispersion parameter,
-#   # 8 numbers from nnls
-#   number_of_tests=H
-#   pval_mat = matrix(nrow=batchsize, ncol=number_of_tests)
-#   # Start hypothesis testing
-#   
-#   library(foreach)
-#   library(doMC)
-#   registerDoMC(ncpus)
-#   library(doRNG)
-#   # see https://stackoverflow.com/questions/8358098/how-to-set-seed-for-random-simulations-with-foreach-and-domc-packages
-#   
-#   gene_indices = (1+(batch-1)*batchsize):min(nrow(CMC_count), batch*batchsize)
-#   
-#   stime = system.time({
-#     
-#     result_list = foreach(j=gene_indices,
-#                           .packages=c("MASS", "CARseq")) %dorng% {
-#                             
-#                             if (rd75[j] < 20) return(NULL)
-#                             
-#                             pval_list = tryCatch({
-#                               # Use raw counts and obtain Cook's distance
-#                               res_optim_full_raw_counts = CARseq::fit_model(
-#                                 cell_type_specific_variables = cell_type_specific_variables_full,
-#                                 other_variables = clinical_variables,
-#                                 read_depth = d,
-#                                 cellular_proportions = rho,
-#                                 counts = CMC_count[j, ],
-#                                 init = NULL,
-#                                 fix_overdispersion = FALSE,
-#                                 number_of_resample = 1,
-#                                 use_log_scale_algorithm = FALSE,
-#                                 verbose = FALSE)
-#                               
-#                               # a simple model only including gene read depth and sample read depth
-#                               # it is used to generate replacement values for outliers
-#                               glmmodel = MASS::glm.nb(CMC_count[j, ]~offset(log_depth), data = CMC_clinical_merged2)
-#                               
-#                               # # filter samples by Cook's distance
-#                               # if (identical(RD, "RDoffset")) {
-#                               #   if (is.null(clinical_variables)) {
-#                               #     glmmodel = MASS::glm.nb(CMC_count[j, ]~offset(log(d)))
-#                               #   } else {
-#                               #     glmmodel = MASS::glm.nb(CMC_count[j, ]~offset(log(d)) + clinical_variables)
-#                               #   }
-#                               # } else if (identical(RD, "RDcovariate")) {
-#                               #   if (is.null(clinical_variables)) {
-#                               #     glmmodel = MASS::glm.nb(CMC_count[j, ]~1)
-#                               #   } else {
-#                               #     glmmodel = MASS::glm.nb(CMC_count[j, ]~clinical_variables)
-#                               #   }
-#                               # }
-#                               
-#                               sample2use = NULL
-#                               if (identical(outlier, "CooksFullModel.5")) {
-#                                 sample2use = which(res_optim_full_raw_counts$cooks.distance < 0.5)
-#                               } else if (identical(outlier, "CooksFullModel.1")) {
-#                                 sample2use = which(res_optim_full_raw_counts$cooks.distance < 0.1)
-#                               } else if (identical(outlier, "CooksFullModel4overN")) {
-#                                 sample2use = which(res_optim_full_raw_counts$cooks.distance < 4/n_B)
-#                               } else if (identical(outlier, "Cooks4overN")) {
-#                                 sample2use = which(cooks.distance(glmmodel) < 4/n_B)
-#                               } else if (identical(outlier, "CooksF.99")) {
-#                                 sample2use = which(cooks.distance(glmmodel) < qf(1 + K, n_B - K - 1, p = 0.99))
-#                               } else if (identical(outlier, "UseAll") || identical(outlier, "Prior.16") || identical(outlier, "PriorEmpiricalBayes")) {
-#                                 sample2use = seq_len(n_B)
-#                               }
-#                               # table(cooks.distance(glmmodel) < 4/n_B)
-#                               rbind(round(fitted(glmmodel)[-sample2use]), CMC_count[j,-sample2use])
-#                               CMC_count_j_refitted = CMC_count[j, ]
-#                               # refit the outliers (this is cell type-specific)
-#                               CMC_count_j_refitted[-sample2use] = round(fitted(glmmodel)[-sample2use])
-#                               # Plot Cook's distance:
-#                               # plot(glmmodel, which=4)
-#                               # Another more stringent cutoff:
-#                               # qf(df1=20, df2=517, p=0.99)  # see DESeq2
-#                               # "The removal of the i-th data point
-#                               #  moves the least squares estimate to the edge of the 99% confidence interval
-#                               #  for beta based on beta_hat."  (Cook 1977)
-#                               
-#                               pvalues = rep(NA, 4)
-#                               
-#                               overdispersion_theta_init = 20
-#                               theta_max=1e4
-#                               theta_min=1e-4
-#                               
-#                               # compute log likelihood for full model
-#                               x0 = c(rep(0, K), rep(1, H*2), overdispersion_theta_init)
-#                               upper = c(rep(Inf, K), rep(Inf, H*2), theta_max)
-#                               lower = c(rep(-Inf, K), rep(1e-2, H*2), theta_min)
-#                               
-#                               ##################################################
-#                               # Iterative weighted least squares               #
-#                               ##################################################
-#                               M = 2
-#                               
-#                               if (identical(outlier, "Prior.16")) {
-#                                 lambda = 0.16
-#                                 use_log_scale_algorithm = TRUE
-#                               } else if (identical(outlier, "PriorEmpiricalBayes")) {
-#                                 lambda = lambda_empirical_bayes
-#                                 use_log_scale_algorithm = TRUE
-#                               } else {
-#                                 lambda = 0
-#                                 use_log_scale_algorithm = FALSE
-#                               }
-#                               
-#                               # call CARseq::fit_model to obtain estimates and negative log-likelihood
-#                               res_optim_full = CARseq::fit_model(
-#                                 cell_type_specific_variables = cell_type_specific_variables_full,
-#                                 other_variables = clinical_variables,
-#                                 read_depth = d,
-#                                 cellular_proportions = rho,
-#                                 counts = CMC_count_j_refitted,
-#                                 init = NULL,
-#                                 fix_overdispersion = FALSE,
-#                                 number_of_resample = 1,
-#                                 use_log_scale_algorithm = use_log_scale_algorithm,
-#                                 lambda = lambda,
-#                                 verbose = FALSE)
-#                               
-#                               
-#                               if (identical(outlier, "Prior.16") || identical(outlier, "PriorEmpiricalBayes")) {
-#                                 pvalues = res_optim_full$lfc[, "Pr(>|z|)"]
-#                               } else {
-#                                 indices_list = list(1,2,3,4)
-#                                 for (h in 1:H) {
-#                                   # specify design matrix in reduced model
-#                                   cell_type_specific_variables_reduced = array(0, dim=c(n_B, H, 2))
-#                                   cell_type_specific_variables_reduced[x == 0, , 1] = 1
-#                                   cell_type_specific_variables_reduced[x == 1, , 2] = 1
-#                                   
-#                                   indices = indices_list[[h]]
-#                                   # For the cell type specified by indices:
-#                                   cell_type_specific_variables_reduced[, indices, 1] = 1
-#                                   cell_type_specific_variables_reduced[, indices, 2] = 0
-#                                   
-#                                   # fit reduced model
-#                                   res_optim = CARseq::fit_model(
-#                                     cell_type_specific_variables = cell_type_specific_variables_reduced,
-#                                     other_variables = clinical_variables,
-#                                     read_depth = d,
-#                                     cellular_proportions = rho,
-#                                     counts = CMC_count_j_refitted,
-#                                     init = NULL,
-#                                     fix_overdispersion = FALSE,
-#                                     number_of_resample = 1,
-#                                     lambda = lambda,
-#                                     use_log_scale_algorithm = use_log_scale_algorithm,
-#                                     verbose = FALSE)
-#                                   
-#                                   # res_optim
-#                                   # cat("==========================\n")
-#                                   
-#                                   if (identical(distribution, "chisq1df")) {
-#                                     pvalues[h] = pchisq(2*(res_optim$value - res_optim_full$value), df = 1, lower.tail = FALSE)
-#                                   } else if (identical(distribution, "chisqmix")) {
-#                                     cell_type_specific_estimates = matrix(res_optim$coefficients[K + seq_len(H*M), 1], nrow=H, ncol=M)
-#                                     # Increment of 1 since the parameter of interest can be almost regarded as a parameter 
-#                                     # on the boundary when there is extremely high correlation with a boundary nuisance parameter.
-#                                     number_of_params_on_boundary = 1 + sum(apply(cell_type_specific_estimates, 1,
-#                                                                                  function(x) any(x <= -10 + 1e-6, na.rm = TRUE)))
-#                                     lrstatistic = 2*(res_optim$value - res_optim_full$value)
-#                                     # To be conservative, the distribution is similar to the null distribuion in
-#                                     # testing "number_of_params_on_boundary" params on the boundary simultaneously,
-#                                     # but the df=0 component is merged to df=1 component.
-#                                     # Of the mixture components, degrees of freedom starts from 1:
-#                                     degrees_of_freedom = seq_len(number_of_params_on_boundary)
-#                                     weights = choose(number_of_params_on_boundary, degrees_of_freedom)
-#                                     # weights for df=1 is added by what was originally reserved for df=0:
-#                                     weights[1] = 1 + weights[1]
-#                                     weights = weights * (0.5^number_of_params_on_boundary)
-#                                     pvalues[h] = sum(weights * sapply(degrees_of_freedom, 
-#                                                                       function(x) pchisq(lrstatistic, df = x, lower.tail = FALSE)))
-#                                   }
-#                                 }
-#                               }
-#                               
-#                               list(pvalues = pvalues,
-#                                    coefficients = res_optim_full$coefficients,
-#                                    lfc = res_optim_full$lfc,
-#                                    cooks.distance = res_optim_full$cooks.distance,
-#                                    fitted.values = res_optim_full$fitted.values
-#                                    # , CMC_count_j_refitted = CMC_count_j_refitted
-#                               )
-#                               
-#                             }, error = function(e) {
-#                               NULL
-#                             }, finally = {
-#                             })
-#                             
-#                             ##################################################
-#                             # end testing one cell type using nloptr
-#                             ##################################################
-#                             pval_list
-#                           }
-#     
-#   })[3]
-#   
-#   attr(result_list, "time") = stime
-#   saveRDS(result_list, sprintf("%s/result_list%s.rds", config, batch))  # unprocessed information
-#   
-#   coefficient_names = rownames(result_list[[1]]$coefficients)
-#   coefficients_mat = do.call(rbind, lapply(result_list, function(x) {
-#     if (is.null(x)) {
-#       if (identical(outlier, "Prior.16") || identical(outlier, "PriorEmpiricalBayes")) {
-#         rep(NA, K + H * (2 + 1) + 1)
-#       } else {
-#         rep(NA, K + H * 2 + 1)
-#       }
-#     } else { 
-#       x$coefficients[,1]
-#     }
-#   }))
-#   colnames(coefficients_mat) = coefficient_names
-#   rownames(coefficients_mat) = rownames(CMC_count)[gene_indices]
-#   pval_mat = do.call(rbind, lapply(result_list, function(x) if (is.null(x)) rep(NA, H) else x$pvalues))
-#   colnames(pval_mat) = colnames(rho)
-#   rownames(pval_mat) = rownames(CMC_count)[gene_indices]
-#   
-#   saveRDS(pval_mat, sprintf("%s/pval_mat%s.rds", config, batch))
-#   saveRDS(coefficients_mat, sprintf("%s/coefficients_mat%s.rds", config, batch))
-#   
-# }

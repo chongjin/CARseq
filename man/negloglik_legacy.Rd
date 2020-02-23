@@ -4,8 +4,14 @@
 \alias{negloglik_legacy}
 \title{negative log-likelihood function of a CARseq negative binomial model}
 \usage{
-negloglik_legacy(coefs, cell_type_specific_variables, other_variables,
-  read_depth, cellular_proportions, counts)
+negloglik_legacy(
+  coefs,
+  cell_type_specific_variables,
+  other_variables,
+  read_depth,
+  cellular_proportions,
+  counts
+)
 }
 \arguments{
 \item{coefs}{a vector of c(beta, gamma, overdispersion), where beta is a length K vector of cell type-indepedent coefficients,
@@ -24,7 +30,7 @@ gamma is a matrix of H x M dimension of cell type-specific non-negative coeffici
 \description{
 \code{negloglik_legacy} provides a negative log-likelihood function 
 of negative binomial distribution 
-whose mean is a sum of nonnegative terms with covariates
+whose mean is a sum of nonnegative terms with covariates.
 }
 \examples{
 library(CARseq)

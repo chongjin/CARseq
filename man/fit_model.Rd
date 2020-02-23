@@ -6,11 +6,21 @@
 using iteratively weighted least squares / non-negative least squares
 with backtracking line search.}
 \usage{
-fit_model(cell_type_specific_variables, other_variables, read_depth,
-  cellular_proportions, counts, verbose = TRUE, init = NULL,
-  fix_overdispersion = FALSE, number_of_resample = 1,
-  use_log_scale_algorithm = FALSE, lambda = 1e-06,
-  return_coefficients_only = FALSE, allow_negative_expression = FALSE)
+fit_model(
+  cell_type_specific_variables,
+  other_variables,
+  read_depth,
+  cellular_proportions,
+  counts,
+  verbose = TRUE,
+  init = NULL,
+  fix_overdispersion = FALSE,
+  number_of_resample = 1,
+  use_log_scale_algorithm = FALSE,
+  lambda = 1e-06,
+  return_coefficients_only = FALSE,
+  allow_negative_expression = FALSE
+)
 }
 \arguments{
 \item{cell_type_specific_variables}{an array of n_B x H x K of cell type-independent variables.}
@@ -61,6 +71,9 @@ will be on a non-log scale and could possibly be negative, while LFCs will not b
 whose mean is a sum of nonnegative terms with covariates.
 The overdispersion parameter is estimated by maximizing the 
 adjusted profile log-likelihood.
+}
+\details{
+Please use the wrapper \link{run_CARseq}. This function is not intended for general use.
 }
 \examples{
 library(CARseq)
