@@ -11,8 +11,9 @@ run_CARseq(
   formula = NULL,
   data = NULL,
   read_depth = 1,
-  shrinked_lfc = TRUE,
-  cores = 1
+  shrunken_lfc = TRUE,
+  cores = 1,
+  fix_overdispersion = FALSE
 )
 }
 \arguments{
@@ -30,19 +31,28 @@ run_CARseq(
 regression model. Alternatively, it can be 1, NA or NULL so that we don't have an offset term
 in the model, and log(read_depth) can be included as one of the cell type-independent variables.}
 
-\item{shrinked_lfc}{Logical. If \code{TRUE} (default), provide shrinked log fold change for cell type-specific variables.}
+\item{shrunken_lfc}{Logical. If \code{TRUE} (default), provide shrunken log fold change for cell type-specific variables.}
 
 \item{cores}{Numeric. Number of cores to use in \code{doMC::registerDoMC} which uses system \code{fork} call.}
+
+\item{fix_overdispersion}{Logical or numeric. In general, when the sample size is sufficiently large (for example 10 samples per degree of freedom),
+fix_overdispersion should be FALSE so that the overdispersion parameter is re-estimated in the reduced model.
+However, when sample size is smaller, overdispersion parameter is hard to estimate and it is might be advantageous to
+always use overdispersion parameter estimated under the full model, which is similar to how DESeq2 LRT works.
+Alternatively, only for experimental purposes, 
+a list of overdispersion parameters equal to the number of samples,
+parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion},
+can be provided so that pre-computed overdispersion parameters can be used.}
 }
 \value{
-Returns a list mostly of matrices. Note that the matrices with "shrinked" in their names are only available when \code{shrinked_lfc} is \code{TRUE}: 
+Returns a list mostly of matrices. Note that the matrices with "shrunken" in their names are only available when \code{shrunken_lfc} is \code{TRUE}: 
 \describe{
   \item{p}{A matrix of G x H p-values}
   \item{padj}{A matrix of G x H p-values adjusted using Benjamini & Hochberg (1995).}
-  \item{shrinked_lfc}{A matrix of shrinked log fold change between cell type-specific effects.}
-  \item{shrinked_lfcSE}{A matrix of standard errors of shrinked log fold change of cell type-specific effects between different groups.}
-  \item{shrinked_coefficients}{A matrix of shrinked coefficient estimates.}
-  \item{shrinked_coefficientsSE}{A matrix of standard errors of shrinked coefficient estimates.}
+  \item{shrunken_lfc}{A matrix of shrunken log fold change between cell type-specific effects.}
+  \item{shrunken_lfcSE}{A matrix of standard errors of shrunken log fold change of cell type-specific effects between different groups.}
+  \item{shrunken_coefficients}{A matrix of shrunken coefficient estimates.}
+  \item{shrunken_coefficientsSE}{A matrix of standard errors of shrunken coefficient estimates.}
   \item{lfc}{A matrix of log fold change between cell type-specific effects.}
   \item{lfcSE}{A matrix of standard errors of log fold change of cell type-specific effects between between different groups of cell type-specific effects.}
   \item{coefficients}{A matrix of MLE coefficient estimates.}
@@ -64,8 +74,9 @@ res = run_CARseq(count_matrix = n50DE221rep1$observed_read_count[1:10,],
                  formula = ~ RIN,
                  data = n50DE221rep1$clinical_variables,
                  read_depth = n50DE221rep1$d,
-                 shrinked_lfc = TRUE,
-                 cores = 2
+                 shrunken_lfc = TRUE,
+                 cores = 1,
+                 fix_overdispersion = FALSE
 )
 
 }

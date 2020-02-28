@@ -30,18 +30,26 @@ NULL
 #' @param read_depth A vector of n sample-specific read depths. It it used as an offset term in the
 #'        regression model. Alternatively, it can be 1, NA or NULL so that we don't have an offset term
 #'        in the model, and log(read_depth) can be included as one of the cell type-independent variables.
-#' @param shrinked_lfc Logical. If \code{TRUE} (default), provide shrinked log fold change for cell type-specific variables.
+#' @param shrunken_lfc Logical. If \code{TRUE} (default), provide shrunken log fold change for cell type-specific variables.
 #' @param cores Numeric. Number of cores to use in \code{doMC::registerDoMC} which uses system \code{fork} call.
+#' @param fix_overdispersion Logical or numeric. In general, when the sample size is sufficiently large (for example 10 samples per degree of freedom),
+#' fix_overdispersion should be FALSE so that the overdispersion parameter is re-estimated in the reduced model.
+#' However, when sample size is smaller, overdispersion parameter is hard to estimate and it is might be advantageous to
+#' always use overdispersion parameter estimated under the full model, which is similar to how DESeq2 LRT works.
+#' Alternatively, only for experimental purposes, 
+#' a list of overdispersion parameters equal to the number of samples,
+#' parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion},
+#' can be provided so that pre-computed overdispersion parameters can be used.
 #'
 #' @return
-#' Returns a list mostly of matrices. Note that the matrices with "shrinked" in their names are only available when \code{shrinked_lfc} is \code{TRUE}: 
+#' Returns a list mostly of matrices. Note that the matrices with "shrunken" in their names are only available when \code{shrunken_lfc} is \code{TRUE}: 
 #' \describe{
 #'   \item{p}{A matrix of G x H p-values}
 #'   \item{padj}{A matrix of G x H p-values adjusted using Benjamini & Hochberg (1995).}
-#'   \item{shrinked_lfc}{A matrix of shrinked log fold change between cell type-specific effects.}
-#'   \item{shrinked_lfcSE}{A matrix of standard errors of shrinked log fold change of cell type-specific effects between different groups.}
-#'   \item{shrinked_coefficients}{A matrix of shrinked coefficient estimates.}
-#'   \item{shrinked_coefficientsSE}{A matrix of standard errors of shrinked coefficient estimates.}
+#'   \item{shrunken_lfc}{A matrix of shrunken log fold change between cell type-specific effects.}
+#'   \item{shrunken_lfcSE}{A matrix of standard errors of shrunken log fold change of cell type-specific effects between different groups.}
+#'   \item{shrunken_coefficients}{A matrix of shrunken coefficient estimates.}
+#'   \item{shrunken_coefficientsSE}{A matrix of standard errors of shrunken coefficient estimates.}
 #'   \item{lfc}{A matrix of log fold change between cell type-specific effects.}
 #'   \item{lfcSE}{A matrix of standard errors of log fold change of cell type-specific effects between between different groups of cell type-specific effects.}
 #'   \item{coefficients}{A matrix of MLE coefficient estimates.}
@@ -60,16 +68,17 @@ NULL
 #'                  formula = ~ RIN,
 #'                  data = n50DE221rep1$clinical_variables,
 #'                  read_depth = n50DE221rep1$d,
-#'                  shrinked_lfc = TRUE,
-#'                  cores = 2
+#'                  shrunken_lfc = TRUE,
+#'                  cores = 1,
+#'                  fix_overdispersion = FALSE
 #' )
 #'
 #' @export
 run_CARseq = function(
     count_matrix, cellular_proportions, groups, formula = NULL, data = NULL,
     read_depth = 1, 
-    shrinked_lfc = TRUE,
-    cores = 1) {
+    shrunken_lfc = TRUE,
+    cores = 1, fix_overdispersion = FALSE) {
   
   elapsed = Sys.time()
   if (!is.matrix(count_matrix)) count_matrix = as.matrix(count_matrix)
@@ -79,6 +88,7 @@ run_CARseq = function(
   stopifnot(length(groups) == n)
   stopifnot(nrow(data) == n)
   stopifnot(nrow(cellular_proportions) == n)
+  stopifnot(is.logical(fix_overdispersion) || (is.numeric(fix_overdispersion) && length(fix_overdispersion) == G))
   # "formula" contains covariates that are cell type-independent.
   # If an intercept term is detected, it will be automatically removed with a warning.
   # construct the matrix of "other_variables" from "formula" and "data":
@@ -103,6 +113,9 @@ run_CARseq = function(
   for (m in seq_len(M)) {
     cell_type_specific_variables_full[groups == levels(groups)[m], , m] = 1
   }
+  if (is.null(colnames(count_matrix))) colnames(count_matrix) = paste0("sample", seq_len(n))
+  if (is.null(colnames(cellular_proportions))) colnames(cellular_proportions) = paste0("celltype", seq_len(H))
+  dimnames(cell_type_specific_variables_full) = list(colnames(count_matrix), colnames(cellular_proportions), levels(groups))
   
   # allocate cores for parallel computation
   `%dopar%` = foreach::`%do%`
@@ -115,6 +128,8 @@ run_CARseq = function(
   result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
     fit_model_list = tryCatch({
       pvalues = rep(NA, H)
+      overdispersion = FALSE
+      if (is.numeric(fix_overdispersion)) overdispersion = fix_overdispersion[j]
       # call CARseq::fit_model to obtain estimates and negative log-likelihood
       res_optim_full = CARseq::fit_model(
         cell_type_specific_variables = cell_type_specific_variables_full,
@@ -123,11 +138,13 @@ run_CARseq = function(
         cellular_proportions = cellular_proportions,
         counts = count_matrix[j, ],
         init = NULL,
-        fix_overdispersion = FALSE,
+        fix_overdispersion = overdispersion,
         number_of_resample = 1,
         use_log_scale_algorithm = FALSE,
         lambda = 0,
         verbose = FALSE)
+      
+      if (is.logical(fix_overdispersion) && fix_overdispersion) overdispersion = res_optim_full$coefficients[nrow(res_optim_full$coefficients), 1]
       
       for (h in seq_len(H)) {
         # specify design matrix in reduced model
@@ -138,6 +155,7 @@ run_CARseq = function(
         # For the cell type specified by indices:
         cell_type_specific_variables_reduced[, h, 1] = 1
         cell_type_specific_variables_reduced[, h, -1] = 0
+        dimnames(cell_type_specific_variables_reduced) = list(colnames(count_matrix), colnames(cellular_proportions), levels(groups))
 
         # fit reduced model
         res_optim = CARseq::fit_model(
@@ -147,7 +165,7 @@ run_CARseq = function(
           cellular_proportions = cellular_proportions,
           counts = count_matrix[j, ],
           init = NULL,
-          fix_overdispersion = FALSE,
+          fix_overdispersion = overdispersion,
           number_of_resample = 1,
           use_log_scale_algorithm = FALSE,
           lambda = 0,
@@ -201,12 +219,12 @@ run_CARseq = function(
   
   overdispersion_mat = coefficients_mat[, ncol(coefficients_mat), drop=FALSE]
   
-  # 2nd pass run with prior when we need shrinked LFC
-  if (shrinked_lfc) {
+  # 2nd pass run with prior when we need shrunken LFC
+  if (shrunken_lfc) {
     
     lambda_empirical_bayes = estimate_shrinkage_prior(estimates=coefficients_mat, K=K, M=M, H=H)
     
-    shrinked_result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
+    shrunken_result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
       
       fit_model_list = tryCatch({
         pvalues = rep(NA, H)
@@ -236,36 +254,36 @@ run_CARseq = function(
       fit_model_list
     }
   
-    shrinked_coefficient_names = rownames(shrinked_result_list[[first_j_not_NULL]]$coefficients)
-    shrinked_coefficients_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {
+    shrunken_coefficient_names = rownames(shrunken_result_list[[first_j_not_NULL]]$coefficients)
+    shrunken_coefficients_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {
       if (is.null(x)) {
-        rep(NA, length(shrinked_coefficient_names))
+        rep(NA, length(shrunken_coefficient_names))
       } else {
         x$coefficients[,1]
       }
     }))
-    shrinked_coefficientsSE_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {
+    shrunken_coefficientsSE_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {
       if (is.null(x)) {
-        rep(NA, length(shrinked_coefficient_names))
+        rep(NA, length(shrunken_coefficient_names))
       } else {
         x$coefficients[,2]
       }
     }))
-    colnames(shrinked_coefficients_mat) = colnames(shrinked_coefficientsSE_mat) = shrinked_coefficient_names
-    rownames(shrinked_coefficients_mat) = rownames(shrinked_coefficientsSE_mat) = rownames(count_matrix)[seq_len(G)]
-    shrinked_lfc_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
-    shrinked_lfcSE_mat = do.call(rbind, lapply(shrinked_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
+    colnames(shrunken_coefficients_mat) = colnames(shrunken_coefficientsSE_mat) = shrunken_coefficient_names
+    rownames(shrunken_coefficients_mat) = rownames(shrunken_coefficientsSE_mat) = rownames(count_matrix)[seq_len(G)]
+    shrunken_lfc_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
+    shrunken_lfcSE_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
   }
   
   elapsed = Sys.time() - elapsed
   
-  if (shrinked_lfc) {
+  if (shrunken_lfc) {
     list(p = pval_mat,
          padj = pval_adj_mat,
-         shrinked_lfc = shrinked_lfc_mat,
-         shrinked_lfcSE = shrinked_lfcSE_mat,
-         shrinked_coefficients = shrinked_coefficients_mat[, -ncol(shrinked_coefficients_mat), drop=FALSE],
-         shrinked_coefficientsSE = shrinked_coefficientsSE_mat[, -ncol(shrinked_coefficients_mat), drop=FALSE],
+         shrunken_lfc = shrunken_lfc_mat,
+         shrunken_lfcSE = shrunken_lfcSE_mat,
+         shrunken_coefficients = shrunken_coefficients_mat[, -ncol(shrunken_coefficients_mat), drop=FALSE],
+         shrunken_coefficientsSE = shrunken_coefficientsSE_mat[, -ncol(shrunken_coefficients_mat), drop=FALSE],
          lfc = lfc_mat,
          lfcSE = lfcSE_mat,
          coefficients = coefficients_mat[, -ncol(coefficients_mat), drop=FALSE],
@@ -401,8 +419,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   # We calculate which (cell type, cell type-specific variable) pairs are not included in the model
   # For future use.
   # is_active is a logical vector of length (K + H x M), recording which predictors are included in the model.
-  is_reduced = apply(cell_type_specific_variables, c(2,3),
-                     function(y) identical(y, rep(0, dim(cell_type_specific_variables)[1])))
+  is_reduced = apply(cell_type_specific_variables, c(2,3), function(y) all(y == 0))
   is_active = c(rep(TRUE, K), !is_reduced)
   if (!all(is_active) && use_log_scale_algorithm && sum(lambda) > lambda_minimum) {
     stop("Cannot add prior to a parameters in a reduced model. For Wald test, please fit the full model only. For LR test, please set prior to 0 and set use_log_scale_algorithm = FALSE.")
@@ -721,8 +738,10 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
             step_length = step_length * contraction
           }
           if (verbose) cat("\n")
-          coefs = coefs_new
-          negloglik_curr = negloglik_new
+          if (backtracking_iter != max_backtracking_iter) {
+            coefs = coefs_new
+            negloglik_curr = negloglik_new
+          }
           
           # save the best coefs and negative log-likelihood
           if (is.null(negloglik_best) || negloglik_curr < negloglik_best) {
@@ -733,6 +752,8 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
             coefs_all_time_best = coefs
             negloglik_all_time_best = negloglik_curr
           }
+          
+          if (backtracking_iter == max_backtracking_iter) break
           
           if (!is.finite(negloglik_curr)) next
           
