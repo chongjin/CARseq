@@ -1,14 +1,14 @@
 Package: CARseq
 Type: Package
 Title: Cell type-specific differential analysis of count data
-Version: 0.0.0.9005
+Version: 0.0.0.9006
 Date: 2020-02-22
 Author: Chong Jin, Wei Sun
 Maintainer: Chong Jin <chongjin@live.unc.edu>
 Description: Cell type-specific differential analysis of count data
 Encoding: UTF-8
 License: GPL (>= 3)
-Imports: Rcpp, RcppEigen, matrixStats, MASS, zetadiv, bvls, doMC, foreach, nloptr
+Imports: Rcpp, RcppEigen, matrixStats, MASS, zetadiv, bvls, doMC, doParallel, foreach, nloptr
 LinkingTo: Rcpp, RcppEigen
 Suggests: 
     testthat, 

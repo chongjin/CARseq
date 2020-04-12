@@ -1,0 +1,49 @@
+#' Permute case and control labels symmetrically
+#' 
+#' @param labels a character vector of labels with exactly two levels.
+#' @export
+permute_case_and_controls = function(labels) {
+  # Use a more balanced way of resampling:
+  # Same proportion of case and control samples are re-labelled as "case" sample after permutation.
+  labels = as.factor(as.character(labels))
+  label_levels = levels(labels)
+  if (length(label_levels) <= 1) stop("There are not enough levels. Two levels are required in the vector of labels for the function to work.")
+  if (length(label_levels) >= 3) stop("There are at least three levels. Two levels are required in the vector of labels for the function to work.")
+  is_group1 = (labels == label_levels[1])
+  proportion_of_group1 = sum(is_group1) / length(labels)
+  labels[is_group1] = sample(c(rep(label_levels[1], round(sum(is_group1) * proportion_of_group1)),
+                            rep(label_levels[2], sum(is_group1) - round(sum(is_group1) * proportion_of_group1))))
+  labels[!is_group1] = sample(c(rep(label_levels[1], sum(is_group1) - round(sum(is_group1) * proportion_of_group1)),
+                             rep(label_levels[2], sum(!is_group1) - sum(is_group1) + round(sum(is_group1) * proportion_of_group1))))
+  labels
+}
+
+#' Calculate q-values (Storey 2003) from a p-value distribution with considerable amount of 1's
+#' 
+#' @param pvals a numeric vector of p-values.
+#' 
+#' @examples 
+#' set.seed(1234)
+#' pval = c(runif(100, 0, 0.1), runif(100,0, 1), rep(1, 100))
+#' qval = get_qvalues_one_inflated(pval)
+#' plot(sort(pval), sort(qval), xlim=c(0,1), ylim=c(0,1), type="l",
+#'      xlab="p-values", ylab="q-values")
+#' qval_range = seq(0.001, 0.25, by=0.001)
+#' plot(qval_range,
+#'      sapply(qval_range, function(x) sum(qval <= x, na.rm=TRUE)),
+#'      type="l",
+#'      xlab="q-value", ylab="number of significant genes")
+#' @export
+get_qvalues_one_inflated = function(pvals) {
+  pvals_order = order(pvals)
+  pvals_sorted = pvals[pvals_order]
+  m = sum(!is.na(pvals_sorted))
+  # pi0 = (proportion of p-value = 1) + 2*(proportion of p-value > 0.5 and < 1)
+  pi0 = min(1, (sum(pvals_sorted == 1, na.rm=TRUE) + 2 * sum(pvals_sorted > 0.5 & pvals_sorted < 1, na.rm=TRUE)) / m)
+  qvals = rep(NA, m)
+  qvals[m] = pvals_sorted[m] * pi0
+  for (i in rev(seq_len(m-1))) {
+    qvals[i] = min(pi0*m*pvals_sorted[i]/i, qvals[i+1]) 
+  }
+  qvals[rank(pvals)]
+}

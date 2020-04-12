@@ -24,7 +24,7 @@
 estimate_shrinkage_prior = function(estimates, K, M, H, prob = 0.95) {
   lambda_minimum = 1e-6
   stopifnot(is.matrix(estimates))
-  stopifnot(ncol(estimates) == K + M * H + 1)
+  stopifnot(ncol(estimates) == K + M * H)
   stopifnot(M >= 1)
   # The first H entries are 1/sigma^2 of the normal prior 
   # for each cell type-specific LFC

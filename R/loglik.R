@@ -119,47 +119,38 @@ run_CARseq = function(
   
   # allocate cores for parallel computation
   `%dopar%` = foreach::`%do%`
+  blocksize = 1
+  job_schedule_list = list(seq_len(G))
+  cl = NULL
   if (cores >= 2) {
-    doMC::registerDoMC(cores)
+    cl = parallel::makeCluster(cores, outfile="")
+    doParallel::registerDoParallel(cl)
+    # doMC::registerDoMC(cores)
     `%dopar%` = foreach::`%dopar%`
+    # foreach has too much computational overhead.
+    # We would like to keep each computational blocksize sufficiently long.
+    #  We set blocksize to 1 if number of genes < 100,
+    #     set blocksize to 10 if 100 < number of genes < 10,000,
+    # and set blocksize to 100 if number of genes >= 10,000.
+    if (G >= 100 && G < 10000) {
+      blocksize = 10
+    } else if (G >= 10000) {
+      blocksize = 100
+    }
+    job_schedule_list = parallel::clusterSplit(cl, seq_len(G))
   }
   
-  # calculate LR statistics
-  result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
-    fit_model_list = tryCatch({
-      pvalues = rep(NA, H)
-      overdispersion = FALSE
-      if (is.numeric(fix_overdispersion)) overdispersion = fix_overdispersion[j]
-      # call CARseq::fit_model to obtain estimates and negative log-likelihood
-      res_optim_full = CARseq::fit_model(
-        cell_type_specific_variables = cell_type_specific_variables_full,
-        other_variables = other_variables,
-        read_depth = read_depth,
-        cellular_proportions = cellular_proportions,
-        counts = count_matrix[j, ],
-        init = NULL,
-        fix_overdispersion = overdispersion,
-        number_of_resample = 1,
-        use_log_scale_algorithm = FALSE,
-        lambda = 0,
-        verbose = FALSE)
-      
-      if (is.logical(fix_overdispersion) && fix_overdispersion) overdispersion = res_optim_full$coefficients[nrow(res_optim_full$coefficients), 1]
-      
-      for (h in seq_len(H)) {
-        # specify design matrix in reduced model
-        cell_type_specific_variables_reduced = array(0, dim=c(n, H, M))
-        for (m in seq_len(M)) {
-          cell_type_specific_variables_reduced[groups == levels(groups)[m], , m] = 1
-        }
-        # For the cell type specified by indices:
-        cell_type_specific_variables_reduced[, h, 1] = 1
-        cell_type_specific_variables_reduced[, h, -1] = 0
-        dimnames(cell_type_specific_variables_reduced) = list(colnames(count_matrix), colnames(cellular_proportions), levels(groups))
-
-        # fit reduced model
-        res_optim = CARseq::fit_model(
-          cell_type_specific_variables = cell_type_specific_variables_reduced,
+  # 1st pass: calculate LR statistics
+  result_list = foreach::foreach(job=seq_along(job_schedule_list), .packages=c("MASS", "CARseq"), .combine=c) %dopar% {
+    fit_model_list = list()
+    for (j in job_schedule_list[[job]]) {
+      fit_model_list[[1 + length(fit_model_list)]] = tryCatch({
+        pvalues = rep(NA, H)
+        overdispersion = FALSE
+        if (is.numeric(fix_overdispersion)) overdispersion = fix_overdispersion[j]
+        # call CARseq::fit_model to obtain estimates and negative log-likelihood
+        res_optim_full = CARseq::fit_model(
+          cell_type_specific_variables = cell_type_specific_variables_full,
           other_variables = other_variables,
           read_depth = read_depth,
           cellular_proportions = cellular_proportions,
@@ -170,19 +161,50 @@ run_CARseq = function(
           use_log_scale_algorithm = FALSE,
           lambda = 0,
           verbose = FALSE)
-
-        pvalues[h] = pchisq(2*(res_optim$value - res_optim_full$value), df = M - 1, lower.tail = FALSE)
-      }
-      list(pvalues        = pvalues,
-           coefficients   = res_optim_full$coefficients,
-           lfc            = res_optim_full$lfc
-      )
-    }, error = function(e) {
-      NULL
-    }, finally = {
-    })
-
+        
+        if (is.logical(fix_overdispersion) && fix_overdispersion) overdispersion = res_optim_full$coefficients[nrow(res_optim_full$coefficients), 1]
+        
+        for (h in seq_len(H)) {
+          # specify design matrix in reduced model
+          cell_type_specific_variables_reduced = array(0, dim=c(n, H, M))
+          for (m in seq_len(M)) {
+            cell_type_specific_variables_reduced[groups == levels(groups)[m], , m] = 1
+          }
+          # For the cell type specified by indices:
+          cell_type_specific_variables_reduced[, h, 1] = 1
+          cell_type_specific_variables_reduced[, h, -1] = 0
+          dimnames(cell_type_specific_variables_reduced) = list(colnames(count_matrix), colnames(cellular_proportions), levels(groups))
+  
+          # fit reduced model
+          res_optim = CARseq::fit_model(
+            cell_type_specific_variables = cell_type_specific_variables_reduced,
+            other_variables = other_variables,
+            read_depth = read_depth,
+            cellular_proportions = cellular_proportions,
+            counts = count_matrix[j, ],
+            init = NULL,
+            fix_overdispersion = overdispersion,
+            number_of_resample = 1,
+            use_log_scale_algorithm = FALSE,
+            lambda = 0,
+            verbose = FALSE)
+  
+          pvalues[h] = pchisq(2*(res_optim$value - res_optim_full$value), df = M - 1, lower.tail = FALSE)
+        }
+        list(pvalues        = pvalues,
+             coefficients   = res_optim_full$coefficients,
+             lfc            = res_optim_full$lfc
+        )
+      }, error = function(e) {
+        NULL
+      }, finally = {
+      })
+    }
+    if (j %% (10 * blocksize) == 0 || j == G) {
+      cat(sprintf("Gene %d of %d has been processed at %s [1st pass]\n", j, G, Sys.time()))
+    }
     fit_model_list
+    
   }
 
   first_j_not_NULL = {
@@ -216,44 +238,50 @@ run_CARseq = function(
   # MLE estimates and standard error estimators for log fold change of cell type-specific covariates:
   lfc_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
   lfcSE_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
+  rownames(lfc_mat) = rownames(lfcSE_mat) = rownames(count_matrix)[seq_len(G)]
   
   overdispersion_mat = coefficients_mat[, ncol(coefficients_mat), drop=FALSE]
   
   # 2nd pass run with prior when we need shrunken LFC
   if (shrunken_lfc) {
     
-    lambda_empirical_bayes = estimate_shrinkage_prior(estimates=coefficients_mat, K=K, M=M, H=H)
+    lambda_empirical_bayes = estimate_shrinkage_prior(estimates=coefficients_mat[,seq_len(K+M*H),drop=FALSE], K=K, M=M, H=H)
     
-    shrunken_result_list = foreach::foreach(j=seq_len(G), .packages=c("MASS", "CARseq")) %dopar% {
-      
-      fit_model_list = tryCatch({
-        pvalues = rep(NA, H)
-        # call CARseq::fit_model to obtain estimates and negative log-likelihood
-        res_optim_full = CARseq::fit_model(
-          cell_type_specific_variables = cell_type_specific_variables_full,
-          other_variables = other_variables,
-          read_depth = read_depth,
-          cellular_proportions = cellular_proportions,
-          counts = count_matrix[j, ],
-          init = NULL,
-          fix_overdispersion = FALSE,
-          number_of_resample = 1,
-          use_log_scale_algorithm = TRUE,
-          lambda = lambda_empirical_bayes,
-          verbose = FALSE)
-        
-        list(coefficients   = res_optim_full$coefficients,
-             lfc            = res_optim_full$lfc
-        )
-        
-      }, error = function(e) {
-        NULL
-      }, finally = {
-      })
-      
+    shrunken_result_list = foreach::foreach(job=seq_along(job_schedule_list), .packages=c("MASS", "CARseq"), .combine=c) %dopar% {
+      fit_model_list = list()
+      for (j in job_schedule_list[[job]]) {
+        fit_model_list[[1 + length(fit_model_list)]] = tryCatch({
+          pvalues = rep(NA, H)
+          # call CARseq::fit_model to obtain estimates and negative log-likelihood
+          res_optim_full = CARseq::fit_model(
+            cell_type_specific_variables = cell_type_specific_variables_full,
+            other_variables = other_variables,
+            read_depth = read_depth,
+            cellular_proportions = cellular_proportions,
+            counts = count_matrix[j, ],
+            init = NULL,
+            fix_overdispersion = FALSE,
+            number_of_resample = 1,
+            use_log_scale_algorithm = TRUE,
+            lambda = lambda_empirical_bayes,
+            verbose = FALSE)
+          
+          list(coefficients   = res_optim_full$coefficients,
+               lfc            = res_optim_full$lfc
+          )
+          
+        }, error = function(e) {
+          NULL
+        }, finally = {
+        })
+      }
+      if (j %% (10 * blocksize) == 0 || j == G) {
+        cat(sprintf("Gene %d of %d has been processed at %s [2nd pass for shrunken LFC]\n", j, G, Sys.time()))
+      }
       fit_model_list
+      
     }
-  
+    
     shrunken_coefficient_names = rownames(shrunken_result_list[[first_j_not_NULL]]$coefficients)
     shrunken_coefficients_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {
       if (is.null(x)) {
@@ -273,7 +301,10 @@ run_CARseq = function(
     rownames(shrunken_coefficients_mat) = rownames(shrunken_coefficientsSE_mat) = rownames(count_matrix)[seq_len(G)]
     shrunken_lfc_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
     shrunken_lfcSE_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
+    rownames(shrunken_lfc_mat) = rownames(shrunken_lfcSE_mat) = rownames(count_matrix)[seq_len(G)]
   }
+  
+  if (cores >= 2) parallel::stopCluster(cl)
   
   elapsed = Sys.time() - elapsed
   
@@ -289,6 +320,7 @@ run_CARseq = function(
          coefficients = coefficients_mat[, -ncol(coefficients_mat), drop=FALSE],
          coefficientsSE = coefficientsSE_mat[, -ncol(coefficients_mat), drop=FALSE],
          overdispersion = overdispersion_mat,
+         lambda = lambda_empirical_bayes,
          elapsed_time = elapsed)
   } else {
     list(p = pval_mat,
@@ -407,6 +439,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
   lambda_minimum = 1e-6
   if (!use_log_scale_algorithm) {
     lambda = 0
+    lambda_minimum = 0
   }
   # Check whether design matrix is normal or expanded by checking the singularity of the cell type-specific design matrix.
   # A whole column being all 0s is removed before checking the singularity; such columns indicate reduced model.
@@ -493,7 +526,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
       resample_size = resample_size_list[iter]
       
       # save the current likelihood for each optimization path with a new initial value
-      negloglik_curr_vector[iter] = tryCatch({
+      negloglik_curr_vector[iter] = suppressWarnings(tryCatch({
         
         # Generate initial value through glm model.
         # In very few cases, the overdispersion parameter will be extremely large, and we need to do the sampling again
@@ -508,6 +541,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
           # Do we already have an overdispersion parameter yet?
           if (iter == 1 & (!fix_overdispersion)) {
             # Are there cell type-dependent variables?
+            # Sometimes glm.nb cannot converge. Since the estimates here are only used as initial values, this is not a big issue and is ignored:
             if (K == 0) {
               nbmodel = MASS::glm.nb(counts~offset(log(read_depth)) + 0 + variables_sampled_cell_type_specific,
                                      subset = sample(c(rep(TRUE, resample_size), rep(FALSE, n_B - resample_size))))
@@ -780,7 +814,7 @@ fit_model = function(cell_type_specific_variables, other_variables, read_depth, 
         
         negloglik_best
       # }, error = function(e) {warning(e); warning("Iteration has failed."); NA}, warning = function(w) {warning(w); NA})
-      }, error = function(e) {warning(e); warning("Iteration has failed."); NA})
+      }, error = function(e) {warning(e); warning("Iteration has failed."); NA}))
       
       # We will generate initial values from glm next iteration:
       init = NULL

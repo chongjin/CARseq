@@ -2,6 +2,8 @@
 
 export(estimate_shrinkage_prior)
 export(fit_model)
+export(get_qvalues_one_inflated)
+export(permute_case_and_controls)
 export(rcppeigen_bothproducts)
 export(rcppeigen_hello_world)
 export(rcppeigen_innerproduct)
