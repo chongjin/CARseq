@@ -33,7 +33,10 @@ in the model, and log(read_depth) can be included as one of the cell type-indepe
 
 \item{shrunken_lfc}{Logical. If \code{TRUE} (default), provide shrunken log fold change for cell type-specific variables.}
 
-\item{cores}{Numeric. Number of cores to use in \code{doMC::registerDoMC} which uses system \code{fork} call.}
+\item{cores}{Numeric. Number of cores to use in \code{parallel::makePSOCKcluster}.
+Note that for faster execution of the package, OPENBLAS or MKL library is recommended.
+When OPENBLAS is used, add environment variable \code{Sys.setenv(OPENBLAS_NUM_THREADS=1)}.
+When MKL is used,  add environment variables \code{Sys.setenv(MKL_NUM_THREADS=1)} and \code{Sys.setenv(MKL_THREADING_LAYER="GNU")}.}
 
 \item{fix_overdispersion}{Logical or numeric. In general, when the sample size is sufficiently large (for example 10 samples per degree of freedom),
 fix_overdispersion should be FALSE so that the overdispersion parameter is re-estimated in the reduced model.

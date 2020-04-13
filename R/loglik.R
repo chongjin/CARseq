@@ -31,7 +31,10 @@ NULL
 #'        regression model. Alternatively, it can be 1, NA or NULL so that we don't have an offset term
 #'        in the model, and log(read_depth) can be included as one of the cell type-independent variables.
 #' @param shrunken_lfc Logical. If \code{TRUE} (default), provide shrunken log fold change for cell type-specific variables.
-#' @param cores Numeric. Number of cores to use in \code{doMC::registerDoMC} which uses system \code{fork} call.
+#' @param cores Numeric. Number of cores to use in \code{parallel::makePSOCKcluster}.
+#'        Note that for faster execution of the package, OPENBLAS or MKL library is recommended.
+#'        When OPENBLAS is used, add environment variable \code{Sys.setenv(OPENBLAS_NUM_THREADS=1)}.
+#'        When MKL is used,  add environment variables \code{Sys.setenv(MKL_NUM_THREADS=1)} and \code{Sys.setenv(MKL_THREADING_LAYER="GNU")}.
 #' @param fix_overdispersion Logical or numeric. In general, when the sample size is sufficiently large (for example 10 samples per degree of freedom),
 #' fix_overdispersion should be FALSE so that the overdispersion parameter is re-estimated in the reduced model.
 #' However, when sample size is smaller, overdispersion parameter is hard to estimate and it is might be advantageous to
@@ -123,7 +126,7 @@ run_CARseq = function(
   job_schedule_list = list(seq_len(G))
   cl = NULL
   if (cores >= 2) {
-    cl = parallel::makeCluster(cores, outfile="")
+    cl = parallel::makeCluster(cores, outfile="")  # FORK is not suitable for Windows or GUIs
     doParallel::registerDoParallel(cl)
     # doMC::registerDoMC(cores)
     `%dopar%` = foreach::`%dopar%`
@@ -137,14 +140,14 @@ run_CARseq = function(
     } else if (G >= 10000) {
       blocksize = 100
     }
-    job_schedule_list = parallel::clusterSplit(cl, seq_len(G))
+    job_schedule_list = split(seq_len(G), (seq_len(G) - 1) %/% blocksize)
   }
   
   # 1st pass: calculate LR statistics
   result_list = foreach::foreach(job=seq_along(job_schedule_list), .packages=c("MASS", "CARseq"), .combine=c) %dopar% {
     fit_model_list = list()
     for (j in job_schedule_list[[job]]) {
-      fit_model_list[[1 + length(fit_model_list)]] = tryCatch({
+      fit_model_list[[j + 1 - job_schedule_list[[job]][1]]] = tryCatch({
         pvalues = rep(NA, H)
         overdispersion = FALSE
         if (is.numeric(fix_overdispersion)) overdispersion = fix_overdispersion[j]
@@ -196,7 +199,7 @@ run_CARseq = function(
              lfc            = res_optim_full$lfc
         )
       }, error = function(e) {
-        NULL
+        NA
       }, finally = {
       })
     }
@@ -207,21 +210,21 @@ run_CARseq = function(
     
   }
 
-  first_j_not_NULL = {
+  first_j_not_NA = {
     j = 1
-    while (is.null(result_list[[j]])) j = j + 1
+    while (identical(NA, result_list[[j]])) j = j + 1
     j
   }
-  coefficient_names = rownames(result_list[[first_j_not_NULL]]$coefficients)
+  coefficient_names = rownames(result_list[[first_j_not_NA]]$coefficients)
   coefficients_mat = do.call(rbind, lapply(result_list, function(x) {
-    if (is.null(x)) {
+    if (identical(NA, x)) {
       rep(NA, length(coefficient_names))
     } else {
       x$coefficients[,1]
     }
   }))
   coefficientsSE_mat = do.call(rbind, lapply(result_list, function(x) {
-    if (is.null(x)) {
+    if (identical(NA, x)) {
       rep(NA, length(coefficient_names))
     } else {
       x$coefficients[,2]
@@ -229,15 +232,15 @@ run_CARseq = function(
   }))
   colnames(coefficients_mat) = colnames(coefficientsSE_mat) = coefficient_names
   rownames(coefficients_mat) = rownames(coefficientsSE_mat) = rownames(count_matrix)[seq_len(G)]
-  pval_mat = do.call(rbind, lapply(result_list, function(x) if (is.null(x)) rep(NA, H) else x$pvalues))
+  pval_mat = do.call(rbind, lapply(result_list, function(x) if (identical(NA, x)) rep(NA, H) else x$pvalues))
   colnames(pval_mat) = colnames(cellular_proportions)
   rownames(pval_mat) = rownames(count_matrix)[seq_len(G)]
   # adjusted p values -- Benjamini-Hochberg is used here. Can also use qvalue::qvalue as an alternative:
   pval_adj_mat = pval_mat
   pval_adj_mat[] = apply(pval_adj_mat, 2, function(x) stats::p.adjust(x, method = "BH"))
   # MLE estimates and standard error estimators for log fold change of cell type-specific covariates:
-  lfc_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
-  lfcSE_mat = do.call(rbind, lapply(result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
+  lfc_mat = do.call(rbind, lapply(result_list, function(x) {if (identical(NA, x)) rep(NA, H) else x$lfc[, "Estimate"]}))
+  lfcSE_mat = do.call(rbind, lapply(result_list, function(x) {if (identical(NA, x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
   rownames(lfc_mat) = rownames(lfcSE_mat) = rownames(count_matrix)[seq_len(G)]
   
   overdispersion_mat = coefficients_mat[, ncol(coefficients_mat), drop=FALSE]
@@ -250,7 +253,7 @@ run_CARseq = function(
     shrunken_result_list = foreach::foreach(job=seq_along(job_schedule_list), .packages=c("MASS", "CARseq"), .combine=c) %dopar% {
       fit_model_list = list()
       for (j in job_schedule_list[[job]]) {
-        fit_model_list[[1 + length(fit_model_list)]] = tryCatch({
+        fit_model_list[[j + 1 - job_schedule_list[[job]][1]]] = tryCatch({
           pvalues = rep(NA, H)
           # call CARseq::fit_model to obtain estimates and negative log-likelihood
           res_optim_full = CARseq::fit_model(
@@ -271,7 +274,7 @@ run_CARseq = function(
           )
           
         }, error = function(e) {
-          NULL
+          NA
         }, finally = {
         })
       }
@@ -282,16 +285,16 @@ run_CARseq = function(
       
     }
     
-    shrunken_coefficient_names = rownames(shrunken_result_list[[first_j_not_NULL]]$coefficients)
+    shrunken_coefficient_names = rownames(shrunken_result_list[[first_j_not_NA]]$coefficients)
     shrunken_coefficients_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {
-      if (is.null(x)) {
+      if (identical(NA, x)) {
         rep(NA, length(shrunken_coefficient_names))
       } else {
         x$coefficients[,1]
       }
     }))
     shrunken_coefficientsSE_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {
-      if (is.null(x)) {
+      if (identical(NA, x)) {
         rep(NA, length(shrunken_coefficient_names))
       } else {
         x$coefficients[,2]
@@ -299,8 +302,8 @@ run_CARseq = function(
     }))
     colnames(shrunken_coefficients_mat) = colnames(shrunken_coefficientsSE_mat) = shrunken_coefficient_names
     rownames(shrunken_coefficients_mat) = rownames(shrunken_coefficientsSE_mat) = rownames(count_matrix)[seq_len(G)]
-    shrunken_lfc_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Estimate"]}))
-    shrunken_lfcSE_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (is.null(x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
+    shrunken_lfc_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (identical(NA, x)) rep(NA, H) else x$lfc[, "Estimate"]}))
+    shrunken_lfcSE_mat = do.call(rbind, lapply(shrunken_result_list, function(x) {if (identical(NA, x)) rep(NA, H) else x$lfc[, "Std. Error"]}))
     rownames(shrunken_lfc_mat) = rownames(shrunken_lfcSE_mat) = rownames(count_matrix)[seq_len(G)]
   }
   
