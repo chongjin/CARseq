@@ -1,3 +1,8 @@
+# Further ideas on this:
+# 1. We estimate prior on LFC from all cell types There is no justification for us to assume that
+#    the distribution of estimated LFC is similar to the distribution of actual LFC.
+# 2. We use a very weak prior on intercept, for example, lambda = 1e-4.
+
 #' Estimate the prior needed for LFC shrinkage
 #' 
 #' \code{estimate_shrinkage_prior}, for each cell type, matches the 95 percentile of absolute values of
@@ -36,10 +41,16 @@ estimate_shrinkage_prior = function(estimates, K, M, H, prob = 0.95) {
           estimates[, K + (m1 - 1) * H + seq_len(H)] - estimates[, K + (m2 - 1) * H + seq_len(H)]
     }
   }
-  LFC_variance_parameter = estimate_variance_parameter(LFCs, prob)
+  # We have observed that the different variances of the empirical distribution of estimated LFCs
+  # are mainly because of the cell fractions. This prompts us to set the prior to the same.
+  # LFC_variance_parameter = estimate_variance_parameter(LFCs, prob)
+  LFC_variance_parameter = rep(estimate_variance_parameter(as.numeric(LFCs), prob), H)
   # the last entry is 1/sigma^2 of the normal prior for
   # the cell type-specific intercept terms
-  mean_expression_variance_parameter = estimate_variance_parameter(as.numeric(estimates[, K + seq_len(M*H)]), prob)
+  # mean_expression_variance_parameter = estimate_variance_parameter(as.numeric(estimates[, K + seq_len(M*H)]), prob)
+  # Starting from version 0.0.0.9007, the prior for cell type-specific intercept terms are all set to
+  # an uninformative prior, but more informative than shrinkage for cell type-specific LFCs:
+  mean_expression_variance_parameter = 1e4
   variance_parameter = matrix(c(rep(LFC_variance_parameter, M), rep(mean_expression_variance_parameter, H)),
                               nrow = H, ncol = M + 1)
   c(rep(lambda_minimum, K), 1.0 / variance_parameter)
