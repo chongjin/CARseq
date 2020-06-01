@@ -5,7 +5,7 @@
 permute_case_and_controls = function(labels) {
   # Use a more balanced way of resampling:
   # Same proportion of case and control samples are re-labelled as "case" sample after permutation.
-  labels = as.factor(as.character(labels))
+  if (!is.factor(labels)) labels = as.factor(as.character(labels))
   label_levels = levels(labels)
   if (length(label_levels) <= 1) stop("There are not enough levels. Two levels are required in the vector of labels for the function to work.")
   if (length(label_levels) >= 3) stop("There are at least three levels. Two levels are required in the vector of labels for the function to work.")
