@@ -23,7 +23,7 @@ NULL
 #' @param count_matrix A matrix of G x n total read counts observed.
 #' @param cellular_proportions A matrix of n x H of cellular proportions.
 #' @param groups A vector of length n indicating groups that we would like to test. Will be coerced to be factors.
-#' @param formula A formula of an intercept term "1" and other cell type-indepedent variables. Can be NULL.
+#' @param formula A formula of an intercept term "1" and other cell type-independent variables. Can be NULL.
 #' @param data A data frame containing the cell type-indepedent variables specified in \code{formula}. Can be NULL.
 #' @param read_depth A vector of n sample-specific read depths. It it used as an offset term in the
 #'        regression model. Alternatively, it can be 1, NA or NULL so that we don't have an offset term
