@@ -8,8 +8,8 @@ Maintainer: Chong Jin <chongjin@live.unc.edu>
 Description: Cell type-specific differential analysis of count data
 Encoding: UTF-8
 License: GPL (>= 3)
-Imports: Rcpp, RcppEigen, matrixStats, MASS, zetadiv, bvls, doMC, doParallel, foreach, nloptr
-LinkingTo: Rcpp, RcppEigen
+Imports: matrixStats, MASS, zetadiv, bvls, doMC, doParallel, foreach, nloptr
+LinkingTo: 
 Suggests: 
     testthat, 
 RoxygenNote: 7.0.2

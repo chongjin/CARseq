@@ -8,8 +8,6 @@
 #' @name CARseq-package
 #' @aliases CARseq-package
 #' @keywords package
-#' @useDynLib CARseq
-#' @importFrom Rcpp sourceCpp
 #' @import foreach
 #' @import doMC
 #' @import matrixStats
