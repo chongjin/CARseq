@@ -23,7 +23,7 @@ run_CARseq(
 
 \item{groups}{A vector of length n indicating groups that we would like to test. Will be coerced to be factors.}
 
-\item{formula}{A formula of an intercept term "1" and other cell type-indepedent variables. Can be NULL.}
+\item{formula}{A formula of an intercept term "1" and other cell type-independent variables. Can be NULL.}
 
 \item{data}{A data frame containing the cell type-indepedent variables specified in \code{formula}. Can be NULL.}
 
