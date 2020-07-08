@@ -47,3 +47,83 @@ get_qvalues_one_inflated = function(pvals) {
   }
   qvals[rank(pvals)]
 }
+
+#' Generate 3d barplot.
+#' 
+#' This function is used to illustrate the model-based mean expression in the CARseq paper.
+#' 
+#' @param x a numeric vector of proportions that will be shown on the x axis
+#' @param y a numeric vector of heights that will be shown on the y axis
+#' @param z a numeric vector of depths
+#' @param col a numeric vector of colors
+#' @param zvec a numeric vector of length 2 for the direction of depth. Both entries should be positive.
+#' @param alpha a transparency value taking value between 0 and 1, where 1 is opaque and 0 is transparent
+#' @param border the border color
+#' @param xlim user-specified xlim
+#' @param ylim user-specified ylim
+#' 
+#' @examples 
+#' barplot_3d(x = 1:3, y = 1:3, z = 1)
+#' 
+#' @export
+barplot_3d = function(x, y, z, col = NULL, zvec = c(0.1, 0.1), alpha = 0.8, border = "grey", xlim = NULL, ylim = NULL) {
+  n = length(y)  # number of blocks
+  if (length(x) == 1) {
+    x = rep(1/n, n)
+  } else if (length(x) != n) {
+    stop("The length of x is not equal to the length of y!")
+  }
+  x = x / sum(x)
+  if (length(z) == 1) {
+    z = rep(z, n)
+  } else if (length(z) != n) {
+    stop("The length of z is not equal to the length of y!")
+  }
+  if (is.null(col)) {
+    # by default, use rainbow palette
+    col = hcl.colors(n, "Pastel 1")
+  } else if (length(col) == 1) {
+    col = rep(col, n)
+  } else if (length(col) != n) {
+    stop("The length of col is not equal to the length of y!")
+  }
+  col = rgb(t(col2rgb(col)/255), alpha = alpha)  # add alpha
+  
+  # empty plot
+  if (is.null(xlim)) {
+    xlim = c(0, 1 + max(z) * zvec[1])
+  }
+  if (is.null(ylim)) {
+    ylim = c(0, max(y) + max(z) * zvec[2])
+  }
+  plot(0, type='n', axes=FALSE, ann=FALSE, xlim = xlim, ylim = ylim)
+  x_start = c(0, cumsum(x)[-n])
+  x_end = cumsum(x)
+  for (i in seq_len(n)) {
+    front_col = col[i]
+    segments(x0 = x_start[i], y0 = 0,
+             x1 = x_start[i] + z[i] * zvec[1], y1 = z[i] * zvec[2],
+             col = border)
+    segments(x0 = x_end[i] + z[i] * zvec[1], y0 = z[i] * zvec[2],
+             x1 = x_start[i] + z[i] * zvec[1], y1 = z[i] * zvec[2],
+             col = border)
+    segments(x0 = x_start[i] + z[i] * zvec[1], y0 = y[i] + z[i] * zvec[2],
+             x1 = x_start[i] + z[i] * zvec[1], y1 = z[i] * zvec[2],
+             col = border)
+    # front
+    polygon(x = c(x_start[i], x_end[i], x_end[i], x_start[i]),
+            y = c(0, 0, y[i], y[i]),
+            border = border,
+            col = front_col)
+    # top
+    polygon(x = c(x_start[i], x_end[i], x_end[i] + z[i] * zvec[1], x_start[i] + z[i] * zvec[1]),
+            y = c(y[i], y[i], y[i] + z[i] * zvec[2], y[i] + z[i] * zvec[2]),
+            border = border,
+            col = colorRampPalette(c(front_col, "black"))(10)[2])  # slightly darker than col[i]
+    # right side
+    polygon(x = c(x_end[i], x_end[i] + z[i] * zvec[1], x_end[i] + z[i] * zvec[1], x_end[i]),
+            y = c(0, z[i] * zvec[2], y[i] + z[i] * zvec[2], y[i]),
+            border = border,
+            col = colorRampPalette(c(front_col, "black"))(10)[4])  # much darker than col[i]
+  }
+}
