@@ -41,6 +41,10 @@ NULL
 #' a list of overdispersion parameters equal to the number of samples,
 #' parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion},
 #' can be provided so that pre-computed overdispersion parameters can be used.
+#' @param useSocket If \code{TRUE} (default), use socket for parallele computation, which works on Windows.  
+#' If \code{FALSE}, use fork for parallele computation, which on POSIX systems (Mac, Linux, Unix, BSD) 
+#' and not Windows. 
+#'
 #'
 #' @return
 #' Returns a list mostly of matrices. Note that the matrices with "shrunken" in their names are only available when \code{shrunken_lfc} is \code{TRUE}: 
@@ -71,7 +75,8 @@ NULL
 #'                  read_depth = n50DE221rep1$d,
 #'                  shrunken_lfc = TRUE,
 #'                  cores = 1,
-#'                  fix_overdispersion = FALSE
+#'                  fix_overdispersion = FALSE,
+#'                  useFork = FALSE
 #' )
 #'
 #' @export
@@ -79,7 +84,9 @@ run_CARseq = function(
     count_matrix, cellular_proportions, groups, formula = NULL, data = NULL,
     read_depth = 1, 
     shrunken_lfc = TRUE,
-    cores = 1, fix_overdispersion = FALSE) {
+    cores = 1, 
+    fix_overdispersion = FALSE, 
+    useSocket = TRUE) {
   
   elapsed = Sys.time()
   if (!is.matrix(count_matrix)) count_matrix = as.matrix(count_matrix)
@@ -124,8 +131,12 @@ run_CARseq = function(
   job_schedule_list = list(seq_len(G))
   cl = NULL
   if (cores >= 2) {
-    cl = parallel::makeCluster(cores, outfile="")  # FORK is not suitable for Windows or GUIs
-    doParallel::registerDoParallel(cl)
+    if(useSocket){
+      cl = parallel::makeCluster(cores, outfile="")  # FORK is not suitable for Windows or GUIs
+      doParallel::registerDoParallel(cl)
+    }else{
+      doParallel::registerDoParallel(cores)
+    }
     # doMC::registerDoMC(cores)
     `%dopar%` = foreach::`%dopar%`
     # foreach has too much computational overhead.
@@ -305,7 +316,7 @@ run_CARseq = function(
     rownames(shrunken_lfc_mat) = rownames(shrunken_lfcSE_mat) = rownames(count_matrix)[seq_len(G)]
   }
   
-  if (cores >= 2) parallel::stopCluster(cl)
+  if (cores >= 2 && useSocket) parallel::stopCluster(cl)
   
   elapsed = Sys.time() - elapsed
   
