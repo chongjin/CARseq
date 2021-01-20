@@ -13,7 +13,8 @@ run_CARseq(
   read_depth = 1,
   shrunken_lfc = TRUE,
   cores = 1,
-  fix_overdispersion = FALSE
+  fix_overdispersion = FALSE,
+  useSocket = TRUE
 )
 }
 \arguments{
@@ -46,6 +47,11 @@ Alternatively, only for experimental purposes,
 a list of overdispersion parameters equal to the number of samples,
 parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion},
 can be provided so that pre-computed overdispersion parameters can be used.}
+
+\item{useSocket}{If \code{TRUE} (default), use socket for parallel computation, which works on Windows
+as well as on POSIX systems (Mac, Linux, Unix, BSD) most of the time.
+If \code{FALSE}, use fork for parallele computation, which on POSIX systems
+and not Windows.}
 }
 \value{
 Returns a list mostly of matrices. Note that the matrices with "shrunken" in their names are only available when \code{shrunken_lfc} is \code{TRUE}: 
@@ -79,7 +85,8 @@ res = run_CARseq(count_matrix = n50DE221rep1$observed_read_count[1:10,],
                  read_depth = n50DE221rep1$d,
                  shrunken_lfc = TRUE,
                  cores = 1,
-                 fix_overdispersion = FALSE
+                 fix_overdispersion = FALSE,
+                 useSocket = TRUE
 )
 
 }

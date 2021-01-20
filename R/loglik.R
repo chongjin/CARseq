@@ -41,9 +41,10 @@ NULL
 #' a list of overdispersion parameters equal to the number of samples,
 #' parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion},
 #' can be provided so that pre-computed overdispersion parameters can be used.
-#' @param useSocket If \code{TRUE} (default), use socket for parallele computation, which works on Windows.  
-#' If \code{FALSE}, use fork for parallele computation, which on POSIX systems (Mac, Linux, Unix, BSD) 
-#' and not Windows. 
+#' @param useSocket If \code{TRUE} (default), use socket for parallel computation, which works on Windows
+#' as well as on POSIX systems (Mac, Linux, Unix, BSD) most of the time.
+#' If \code{FALSE}, use fork for parallele computation, which on POSIX systems
+#' and not Windows.
 #'
 #'
 #' @return
@@ -76,7 +77,7 @@ NULL
 #'                  shrunken_lfc = TRUE,
 #'                  cores = 1,
 #'                  fix_overdispersion = FALSE,
-#'                  useFork = FALSE
+#'                  useSocket = TRUE
 #' )
 #'
 #' @export
@@ -84,8 +85,8 @@ run_CARseq = function(
     count_matrix, cellular_proportions, groups, formula = NULL, data = NULL,
     read_depth = 1, 
     shrunken_lfc = TRUE,
-    cores = 1, 
-    fix_overdispersion = FALSE, 
+    cores = 1,
+    fix_overdispersion = FALSE,
     useSocket = TRUE) {
   
   elapsed = Sys.time()
