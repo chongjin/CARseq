@@ -50,7 +50,7 @@ can be provided so that pre-computed overdispersion parameters can be used.}
 
 \item{useSocket}{If \code{TRUE} (default), use socket for parallel computation, which works on Windows
 as well as on POSIX systems (Mac, Linux, Unix, BSD) most of the time.
-If \code{FALSE}, use fork for parallele computation, which on POSIX systems
+If \code{FALSE}, use fork for parallel computation, which on POSIX systems
 and not Windows.}
 }
 \value{
@@ -68,6 +68,10 @@ Returns a list mostly of matrices. Note that the matrices with "shrunken" in the
   \item{coefficientsSE}{A matrix of standard errors of coefficient estimates.}
   \item{overdispersion}{A matrix of overdispersion parameters. The overdispersion parameter
                         is parametrized so that the variance of the negative binomial distribution is \code{mean + mean^2/overdispersion}.}
+  \item{lambda}{The inverse of the variance in a zero-centered multivariate normal distribution that is used as the prior of effects when
+   shrinkage is requested. The entries in \eqn{\lambda} stand for \eqn{K} cell type-independent effects and \eqn{H(M+1)} cell type-specific effects.
+     Originally, in a normal design matrix, there are \(H M\) cell type-specific effects. In an expanded design matrix, however, for each cell type \eqn{h},
+      there are \eqn{M} contrasts \eqn{\gamma_{jhm}} and one group mean \eqn{\gamma_{jh0}}, so there are \eqn{H(M+1)} cell type-specific effects altogether.}
   \item{elapsed_time}{The time elapsed.}
 }
 }
