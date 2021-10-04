@@ -15,4 +15,6 @@ This is the R package for cell type aware analysis of RNA-seq data. The input ar
 
 ## Reference
 
-Jin et al. (2020) Cell Type Aware analysis of RNA-seq data (CARseq) reveals difference and similarities of the molecular mechanisms of Schizophrenia and Autism
+Jin, C., Chen, M., Lin, DY. et al. Cell-type-aware analysis of RNA-seq data. Nat Comput Sci 1, 253–261 (2021). https://doi.org/10.1038/s43588-021-00055-6
+
+A preprint of the paper can be downloaded from: https://github.com/Sun-lab/CARseq/blob/master/inst/docs/Jin_et_al.-2021-Cell-type-aware_analysis_of_RNA-seq_data.pdf
